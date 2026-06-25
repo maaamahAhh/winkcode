@@ -1,0 +1,26 @@
+# Build artifacts
+*.exe
+*.out
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.lib
+*.def
+
+# Logs
+*.log
+
+# IDE/tool caches
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+Thumbs.db
+Desktop.ini
+
+# Test files
+test/
