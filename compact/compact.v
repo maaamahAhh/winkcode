@@ -1,26 +1,43 @@
 module compact
 
 import llm
+import strings
+import json2
 
-// compact_threshold is the approximate token count that triggers auto-compaction.
-// Roughly 100k tokens (~400k characters).
-const compact_threshold = 100_000
+// reserve_tokens is reserved at the top of the context window for model response.
+const reserve_tokens = 16_384
 
-// recent_messages_to_keep is how many recent messages survive compaction intact.
-const recent_messages_to_keep = 8
+// keep_recent_tokens is the token budget reserved for recent conversation history.
+const keep_recent_tokens = 20_000
 
-// compact_prompt is injected as a user message to the LLM for summarization.
-const compact_prompt = '
-Summarize this conversation concisely. Focus on:
-1. What the user asked for and any feedback given
-2. Key files read, edited, or created
-3. Errors encountered and how they were fixed
-4. Decisions made and current state of the work
-5. Pending tasks or next steps
+// default_context_window is used if not explicitly configured in ModelConfig.
+const default_context_window = 256_000
 
-Be specific with file names and code snippets where they matter. Do NOT include tool call mechanics or terminal output.'
+// summarization_system_prompt sets the role for the compaction engine.
+const summarization_system_prompt = 'You are a context compaction engine for an AI coding assistant.
+Summarize the conversation into a dense, high-signal structured state snapshot.
+Omit conversational filler. Preserve all critical context so the assistant can continue without loss.
 
-// estimate_tokens approximates total tokens in a message list (~4 chars per token).
+Structure your output strictly using these XML tags:
+<state_snapshot>
+<primary_intent>
+[Core user goals, explicit requirements, and specific feedback/preferences]
+</primary_intent>
+
+<files_and_code>
+[Specific file paths examined, created, or modified, with brief reasons and key code patterns]
+</files_and_code>
+
+<decisions_and_fixes>
+[Important architectural decisions, errors encountered, and exact resolutions]
+</decisions_and_fixes>
+
+<pending_and_next_steps>
+[Unfinished tasks, immediate next steps, and current state where work left off]
+</pending_and_next_steps>
+</state_snapshot>'
+
+// estimate_tokens estimates token count (~4 characters per token).
 pub fn estimate_tokens(messages []llm.Message) int {
 	mut total := 0
 	for msg in messages {
@@ -34,70 +51,157 @@ pub fn estimate_tokens(messages []llm.Message) int {
 	return total / 4
 }
 
-// should_compact returns true if the conversation is long enough to compact.
-pub fn should_compact(messages []llm.Message) bool {
-	if messages.len <= recent_messages_to_keep {
-		return false
-	}
-	// Also don't compact if even the recent messages alone exceed the threshold
-	mut keep_start := messages.len - recent_messages_to_keep
-	if keep_start < 0 {
-		keep_start = 0
-	}
-	if estimate_tokens(messages[keep_start..]) > compact_threshold {
-		return false
-	}
-	return estimate_tokens(messages) > compact_threshold
+// should_compact reports whether conversation length exceeds the trigger threshold.
+pub fn should_compact(client &llm.Client) bool {
+	ctx_win := if client.context_window > 0 { client.context_window } else { default_context_window }
+	threshold := ctx_win - reserve_tokens
+	tokens := estimate_tokens(client.messages)
+	return tokens > threshold && client.messages.len > 4
 }
 
-// compact replaces older messages with a summary, keeping only the most recent ones.
-// It makes a blocking API call to generate the summary.
-pub fn compact(mut a llm.Client) ! {
-	if !should_compact(a.messages) {
-		return
+// find_safe_cut_point walks backwards from the latest message to reserve keep_budget tokens,
+// ensuring the cut point lands strictly on a clean User message boundary (never splitting tool_use / tool_result).
+fn find_safe_cut_point(messages []llm.Message, keep_budget int) int {
+	if messages.len <= 2 {
+		return 0
+	}
+	mut accumulated := 0
+	mut target_idx := -1
+
+	for i := messages.len - 1; i >= 0; i-- {
+		msg := messages[i]
+		mut msg_chars := msg.text.len
+		for b in msg.content {
+			msg_chars += b.text.len + b.content.len + b.input.len
+		}
+		accumulated += msg_chars / 4
+		if accumulated >= keep_budget {
+			target_idx = i
+			break
+		}
 	}
 
-	// Split: keep recent, summarize old
-	mut keep_start := a.messages.len - recent_messages_to_keep
-	if keep_start < 0 {
-		keep_start = 0
+	// If total conversation is smaller than keep_budget (e.g. manual /compact),
+	// dynamically adapt: keep the latest user turn and summarize all prior turns.
+	if target_idx <= 0 {
+		mut user_turn_indices := []int{}
+		for i, m in messages {
+			if m.role == 'user' && !m.content.any(it.typ == 'tool_result') {
+				user_turn_indices << i
+			}
+		}
+		if user_turn_indices.len > 1 {
+			return user_turn_indices.last()
+		}
+		return 0
 	}
-	mut recent := a.messages[keep_start..]
-	mut old := a.messages[..keep_start]
 
-	if old.len == 0 {
-		return
+	// Align to clean turn boundary: find the nearest user message that is NOT a tool_result
+	for idx := target_idx; idx < messages.len - 1; idx++ {
+		m := messages[idx]
+		if m.role == 'user' && !m.content.any(it.typ == 'tool_result') {
+			return idx
+		}
 	}
 
-	// Build conversation text for summarization
-	mut conversation_text := ''
-	for msg in old {
-		match msg.role {
-			'user' {
-				if msg.text.len > 0 {
-					conversation_text += 'User: ${msg.text}\n\n'
-				}
-				for block in msg.content {
-					match block.typ {
-						'tool_result' {
-							preview := if block.content.len > 500 {
-								block.content[..500] + '...[truncated]'
-							} else {
-								block.content
+	// Fallback: look backwards if not found forwards
+	for idx := target_idx; idx > 0; idx-- {
+		m := messages[idx]
+		if m.role == 'user' && !m.content.any(it.typ == 'tool_result') {
+			return idx
+		}
+	}
+
+	return 0
+}
+
+// extract_file_ops collects file paths read or modified from tool calls in messages.
+fn extract_file_ops(messages []llm.Message) ([]string, []string) {
+	mut read_set := map[string]bool{}
+	mut mod_set := map[string]bool{}
+
+	for msg in messages {
+		if msg.role == 'assistant' {
+			for block in msg.content {
+				if block.typ == 'tool_use' {
+					match block.name {
+						'read' {
+							path := extract_path_arg(block.input)
+							if path.len > 0 {
+								read_set[path] = true
 							}
-							conversation_text += 'Tool result: ${preview}\n\n'
+						}
+						'write', 'edit' {
+							path := extract_path_arg(block.input)
+							if path.len > 0 {
+								mod_set[path] = true
+							}
 						}
 						else {}
 					}
 				}
 			}
-			'assistant' {
+		}
+	}
+
+	mut read_files := []string{}
+	for f in read_set.keys() {
+		if f !in mod_set {
+			read_files << f
+		}
+	}
+	read_files.sort()
+
+	mut mod_files := mod_set.keys()
+	mod_files.sort()
+
+	return read_files, mod_files
+}
+
+fn extract_path_arg(input_json string) string {
+	if input_json.len == 0 {
+		return ''
+	}
+	data := json2.decode[map[string]string](input_json) or { return '' }
+	return data['path'] or { data['filePath'] or { data['file_path'] or { '' } } }
+}
+
+// serialize_conversation formats historical messages into a compact plain text transcript for summarization.
+fn serialize_conversation(messages []llm.Message) string {
+	mut sb := strings.new_builder(4096)
+
+	for msg in messages {
+		match msg.role {
+			'user' {
 				if msg.text.len > 0 {
-					conversation_text += 'Assistant: ${msg.text}\n\n'
+					sb.writeln('[User]: ${msg.text}\n')
 				}
 				for block in msg.content {
-					if block.typ == 'text' && block.text.len > 0 {
-						conversation_text += 'Assistant: ${block.text}\n\n'
+					if block.typ == 'tool_result' {
+						preview := if block.content.len > 1500 {
+							block.content[..1500] + '\n...[truncated]'
+						} else {
+							block.content
+						}
+						sb.writeln('[Tool Result]: ${preview}\n')
+					}
+				}
+			}
+			'assistant' {
+				if msg.text.len > 0 {
+					sb.writeln('[Assistant]: ${msg.text}\n')
+				}
+				for block in msg.content {
+					match block.typ {
+						'text' {
+							if block.text.len > 0 {
+								sb.writeln('[Assistant]: ${block.text}\n')
+							}
+						}
+						'tool_use' {
+							sb.writeln('[Tool Call]: ${block.name}(${block.input})\n')
+						}
+						else {}
 					}
 				}
 			}
@@ -105,58 +209,97 @@ pub fn compact(mut a llm.Client) ! {
 		}
 	}
 
-	// Truncate conversation text if it's still too long
-	if conversation_text.len > 200_000 {
-		conversation_text = conversation_text[..200_000] + '\n\n...[earlier conversation truncated]'
+	mut text := sb.str()
+	if text.len > 250_000 {
+		text = text[..250_000] + '\n\n...[earlier history truncated for summarization]'
+	}
+	return text
+}
+
+// compact executes context compaction, summarizing older history and retaining recent turns safely.
+// Returns the generated summary text.
+pub fn compact(mut a llm.Client, custom_instructions string) !string {
+	if a.messages.len <= 2 {
+		return error('context too small to compact')
 	}
 
-	// Save recent messages and clear
-	mut saved_recent := []llm.Message{cap: recent.len}
-	for msg in recent {
-		saved_recent << msg
+	cut_point := find_safe_cut_point(a.messages, keep_recent_tokens)
+	if cut_point <= 0 || cut_point >= a.messages.len {
+		return error('context too small to compact (need at least 2 conversational turns)')
 	}
 
-	// Temporarily disable tools for compaction
-	original_tool_schemas := a.tool_schemas
-	a.tool_schemas = '[]'
+	mut old_msgs := a.messages[..cut_point]
+	mut kept_msgs := a.messages[cut_point..]
 
-	// Build compact request message
-	a.messages = [
-		llm.Message{
-			role: 'user'
-			text: '${compact_prompt}\n\n--- Conversation to summarize ---\n\n${conversation_text}'
-		},
-	]
-
-	// Call API to get summary (non-streaming via result.text)
-	result := a.chat_stream('', fn (_ string) {}, fn (_ llm.ToolCall) {}, fn (_ string) {}) or {
-		a.tool_schemas = original_tool_schemas
-		mut restored := []llm.Message{cap: old.len + saved_recent.len}
-		restored << old
-		restored << saved_recent
-		a.messages = restored
-		return error('compaction failed: ${err}')
+	if old_msgs.len == 0 {
+		return error('nothing to compact')
 	}
 
-	// Restore tool schemas
-	a.tool_schemas = original_tool_schemas
+	read_files, mod_files := extract_file_ops(old_msgs)
+	transcript := serialize_conversation(old_msgs)
 
-	// Build new message list: boundary marker + summary + recent messages
+	mut prompt_sb := strings.new_builder(2048)
+	prompt_sb.writeln(summarization_system_prompt)
+	if custom_instructions.trim_space().len > 0 {
+		prompt_sb.writeln('\nAdditional User Instructions:\n${custom_instructions.trim_space()}')
+	}
+	if mod_files.len > 0 {
+		prompt_sb.writeln('\nModified Files in Scope:\n- ${mod_files.join('\n- ')}')
+	}
+	if read_files.len > 0 {
+		prompt_sb.writeln('\nRead-Only Files in Scope:\n- ${read_files.join('\n- ')}')
+	}
+	prompt_sb.writeln('\n--- Conversation History to Summarize ---\n')
+	prompt_sb.writeln(transcript)
+
+	// Use an isolated client instance so live conversation state is never mutated if compaction fails
+	mut comp_client := a.clone_clean()
+	comp_client.tool_schemas = '[]'
+	comp_client.system_prompt = summarization_system_prompt
+
+	result := comp_client.chat_stream(prompt_sb.str(), fn (_ string) {}, fn (_ llm.ToolCall) {},
+		fn (_ string) {}, fn (_ string, _ string) {}) or {
+		return error('compaction API call failed: ${err}')
+	}
+
 	summary := result.text.trim_space()
 	if summary.len == 0 {
-		mut restored := []llm.Message{cap: old.len + saved_recent.len}
-		restored << old
-		restored << saved_recent
-		a.messages = restored
-		return
+		return error('compaction generated empty summary')
 	}
 
-	boundary := llm.Message{
-		role: 'user'
-		text: '[Context was compacted. Earlier conversation summarized below.]\n\n${summary}'
+	summary_prefix := '[Context was compacted. Prior conversation summarized below.]\n\n${summary}'
+
+	// If the first kept message is already a user turn, prepend summary to maintain strict user -> assistant alternation
+	if kept_msgs.len > 0 && kept_msgs[0].role == 'user' {
+		mut first := kept_msgs[0]
+		if first.text.len > 0 {
+			first.text = '${summary_prefix}\n\n${first.text}'
+		} else if first.content.len > 0 && first.content[0].typ == 'text' {
+			first.content[0].text = '${summary_prefix}\n\n${first.content[0].text}'
+		} else {
+			mut new_blocks := [llm.ContentBlock{
+				typ: 'text'
+				text: summary_prefix
+			}]
+			for b in first.content {
+				new_blocks << b
+			}
+			first.content = new_blocks
+		}
+		a.messages = [first]
+		for i := 1; i < kept_msgs.len; i++ {
+			a.messages << kept_msgs[i]
+		}
+	} else {
+		boundary := llm.Message{
+			role: 'user'
+			text: summary_prefix
+		}
+		a.messages = [boundary]
+		for m in kept_msgs {
+			a.messages << m
+		}
 	}
-	a.messages = [
-		boundary,
-	]
-	a.messages << saved_recent
+
+	return summary
 }

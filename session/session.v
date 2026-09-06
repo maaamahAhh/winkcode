@@ -2,7 +2,7 @@ module session
 
 import os
 import time
-import json
+import json2
 import utils
 
 const sessions_dir_name = '.winkcode'
@@ -23,8 +23,13 @@ pub struct SessionMessage {
 pub:
 	role        string
 	text        string
+	thinking    string
 	timestamp   string
 	tool_status string // '', 'pending', 'success', 'error'
+	tool_id     string
+	parent_id   string
+	tool_name   string
+	tool_input  string
 }
 
 // Session manages reading/writing conversation sessions.
@@ -54,12 +59,12 @@ pub fn generate_session_id() string {
 pub fn new_session(model string, provider string) Session {
 	cwd := os.getwd()
 	return Session{
-		header: SessionHeader{
-			id: generate_session_id()
+		header:   SessionHeader{
+			id:        generate_session_id()
 			timestamp: time.now().custom_format('YYYY-MM-DD HH:mm:ss')
-			cwd: cwd
-			model: model
-			provider: provider
+			cwd:       cwd
+			model:     model
+			provider:  provider
 		}
 		messages: []SessionMessage{}
 	}
@@ -67,19 +72,25 @@ pub fn new_session(model string, provider string) Session {
 
 pub fn (mut s Session) add_message(role string, text string) {
 	s.messages << SessionMessage{
-		role: role
-		text: text
-		timestamp: time.now().custom_format('HH:mm:ss')
+		role:        role
+		text:        text
+		timestamp:   time.now().custom_format('HH:mm:ss')
 		tool_status: ''
 	}
 }
 
 pub fn (mut s Session) add_tool_message(name string, status string, is_error bool) {
-	tool_status := if is_error { 'error' } else if status == 'done' { 'success' } else { 'pending' }
+	tool_status := if is_error {
+		'error'
+	} else if status == 'done' {
+		'success'
+	} else {
+		'pending'
+	}
 	s.messages << SessionMessage{
-		role: 'tool_call'
-		text: name
-		timestamp: time.now().custom_format('HH:mm:ss')
+		role:        'tool_call'
+		text:        name
+		timestamp:   time.now().custom_format('HH:mm:ss')
 		tool_status: tool_status
 	}
 }
@@ -132,30 +143,26 @@ pub fn load_session(path string) !Session {
 	if !os.exists(path) {
 		return error('session file not found: ${path}')
 	}
-	content := os.read_file(path) or {
-		return error('failed to read session file: ${err}')
-	}
+	content := os.read_file(path) or { return error('failed to read session file: ${err}') }
 	lines := content.split('\n')
 	if lines.len == 0 {
 		return error('empty session file')
 	}
 
-	// First line is the header
 	header_fields := parse_json_line(lines[0])
 	if header_fields['id'] == '' {
 		return error('invalid session header')
 	}
 
 	mut session_header := SessionHeader{
-		id: header_fields['id']
+		id:        header_fields['id']
 		timestamp: header_fields['timestamp']
-		cwd: header_fields['cwd']
-		model: header_fields['model']
-		provider: header_fields['provider']
+		cwd:       header_fields['cwd']
+		model:     header_fields['model']
+		provider:  header_fields['provider']
 	}
 
 	mut messages := []SessionMessage{}
-	// Skip header line (index 0), start from index 1
 	for i := 1; i < lines.len; i++ {
 		line := lines[i].trim_space()
 		if line.len == 0 {
@@ -164,17 +171,22 @@ pub fn load_session(path string) !Session {
 		entry := parse_json_line(line)
 		if entry['type'] == 'message' {
 			messages << SessionMessage{
-				role: entry['role']
-				text: entry['text']
-				timestamp: entry['timestamp']
+				role:        entry['role']
+				text:        entry['text']
+				thinking:    entry['thinking']
+				timestamp:   entry['timestamp']
 				tool_status: entry['tool_status']
+				tool_id:     entry['tool_id']
+				parent_id:   entry['parent_id']
+				tool_name:   entry['tool_name']
+				tool_input:  entry['tool_input']
 			}
 		}
 	}
 
 	return Session{
-		header: session_header
-		messages: messages
+		header:       session_header
+		messages:     messages
 		session_path: path
 	}
 }
@@ -186,11 +198,8 @@ pub fn (s Session) save() ! {
 	} else {
 		session_file_path(s.header)
 	}
-	mut file := os.create(path) or {
-		return error('failed to create session file: ${err}')
-	}
+	mut file := os.create(path) or { return error('failed to create session file: ${err}') }
 
-	// Write header
 	mut header_map := map[string]string{}
 	header_map['type'] = 'session'
 	header_map['id'] = s.header.id
@@ -198,9 +207,8 @@ pub fn (s Session) save() ! {
 	header_map['cwd'] = s.header.cwd
 	header_map['model'] = s.header.model
 	header_map['provider'] = s.header.provider
-	file.write_string(json.encode(header_map) + '\n') or {}
+	file.write_string(json2.encode(header_map) + '\n') or {}
 
-	// Write messages
 	for msg in s.messages {
 		mut entry := map[string]string{}
 		entry['type'] = 'message'
@@ -208,7 +216,22 @@ pub fn (s Session) save() ! {
 		entry['text'] = msg.text
 		entry['timestamp'] = msg.timestamp
 		entry['tool_status'] = msg.tool_status
-		file.write_string(json.encode(entry) + '\n') or {}
+		if msg.thinking.len > 0 {
+			entry['thinking'] = msg.thinking
+		}
+		if msg.tool_id.len > 0 {
+			entry['tool_id'] = msg.tool_id
+		}
+		if msg.parent_id.len > 0 {
+			entry['parent_id'] = msg.parent_id
+		}
+		if msg.tool_name.len > 0 {
+			entry['tool_name'] = msg.tool_name
+		}
+		if msg.tool_input.len > 0 {
+			entry['tool_input'] = msg.tool_input
+		}
+		file.write_string(json2.encode(entry) + '\n') or {}
 	}
 
 	file.close()
@@ -216,18 +239,16 @@ pub fn (s Session) save() ! {
 
 pub fn (mut s Session) append_message(role string, text string) ! {
 	if s.session_path.len == 0 {
-		// First message — create session file
 		s.header = SessionHeader{
-			id: generate_session_id()
+			id:        generate_session_id()
 			timestamp: time.now().custom_format('YYYY-MM-DD HH:mm:ss')
-			cwd: os.getwd()
-			model: s.header.model
-			provider: s.header.provider
+			cwd:       os.getwd()
+			model:     s.header.model
+			provider:  s.header.provider
 		}
 		s.session_path = session_file_path(s.header)
 	}
 
-	// Append to file
 	mut file := os.open_append(s.session_path) or {
 		return error('failed to open session file: ${err}')
 	}
@@ -238,14 +259,14 @@ pub fn (mut s Session) append_message(role string, text string) ! {
 	entry['text'] = text
 	entry['timestamp'] = time.now().custom_format('HH:mm:ss')
 	entry['tool_status'] = ''
-	file.write_string(json.encode(entry) + '\n') or {}
+	file.write_string(json2.encode(entry) + '\n') or {}
 
 	file.close()
 
 	s.messages << SessionMessage{
-		role: role
-		text: text
-		timestamp: entry['timestamp']
+		role:        role
+		text:        text
+		timestamp:   entry['timestamp']
 		tool_status: ''
 	}
 }
@@ -255,8 +276,12 @@ fn parse_json_line(line string) map[string]string {
 	if !s.starts_with('{') || !s.ends_with('}') {
 		return map[string]string{}
 	}
-	s = s[1..s.len - 1].trim_space()
-	return utils.parse_flat_json(s) or { map[string]string{} }
+	return json2.decode[map[string]string](s) or {
+		s_inner := s[1..s.len - 1].trim_space()
+		utils.parse_flat_json(s_inner) or {
+			map[string]string{}
+		}
+	}
 }
 
 fn parse_session_header(path string) ?SessionHeader {
@@ -270,10 +295,10 @@ fn parse_session_header(path string) ?SessionHeader {
 		return none
 	}
 	return SessionHeader{
-		id: fields['id']
+		id:        fields['id']
 		timestamp: fields['timestamp']
-		cwd: fields['cwd']
-		model: fields['model']
-		provider: fields['provider']
+		cwd:       fields['cwd']
+		model:     fields['model']
+		provider:  fields['provider']
 	}
 }

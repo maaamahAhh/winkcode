@@ -1,7 +1,7 @@
 module mcp
 
 import os
-import json
+import json2
 
 pub struct McpConfig {
 pub:
@@ -43,7 +43,7 @@ struct McpFile {
 fn parse_mcp_file(path string) []McpConfig {
 	mut configs := []McpConfig{}
 	content := os.read_file(path) or { return configs }
-	file := json.decode(McpFile, content) or { return configs }
+	file := json2.decode[McpFile](content) or { return configs }
 	for name in file.mcp_servers.keys() {
 		entry := file.mcp_servers[name]
 		if entry.command.len > 0 {

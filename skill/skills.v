@@ -35,7 +35,7 @@ pub fn format_skills_for_prompt(skills []Skill) string {
 	}
 
 	mut parts := []string{}
-	parts << '\n\nSkills: read a skill\'s SKILL.md when the task matches its description.'
+	parts << "\n\nSkills: read a skill's SKILL.md when the task matches its description."
 	parts << '\n<skills>'
 	for skill in skills {
 		parts << '  <skill name="${skill.name}" description="${skill.description}" path="${skill.path}"/>'
@@ -60,9 +60,9 @@ fn scan_skills_dir(dir string) []Skill {
 		if os.exists(skill_md) {
 			description := extract_description(skill_md)
 			skills << Skill{
-				name: entry
+				name:        entry
 				description: description
-				path: skill_md
+				path:        skill_md
 			}
 		}
 	}
@@ -72,26 +72,46 @@ fn scan_skills_dir(dir string) []Skill {
 fn extract_description(path string) string {
 	content := os.read_file(path) or { return '' }
 	lines := content.split('\n')
-	mut result := ''
-	for line in lines {
+	mut in_frontmatter := false
+	mut body_first_line := ''
+
+	for i, line in lines {
 		trimmed := line.trim_space()
-		if trimmed.len == 0 {
+		if i == 0 && trimmed.starts_with('---') {
+			in_frontmatter = true
 			continue
 		}
-		// Skip frontmatter
-		if trimmed.starts_with('---') {
+		if in_frontmatter {
+			if trimmed.starts_with('---') {
+				in_frontmatter = false
+				continue
+			}
+			if trimmed.starts_with('description:') {
+				mut desc := trimmed['description:'.len..].trim_space()
+				if (desc.starts_with('"') && desc.ends_with('"'))
+					|| (desc.starts_with("'") && desc.ends_with("'")) {
+					if desc.len >= 2 {
+						desc = desc[1..desc.len - 1].trim_space()
+					}
+				}
+				if desc.len > 0 {
+					return desc
+				}
+			}
 			continue
 		}
-		// Skip headings
-		if trimmed.starts_with('#') {
+
+		if trimmed.len == 0 || trimmed.starts_with('#') {
 			continue
 		}
-		result = trimmed
-		break
+		if body_first_line.len == 0 {
+			body_first_line = trimmed
+			break
+		}
 	}
-	if result.len == 0 {
-		// Extract skill name from path as fallback
-		result = 'Skill'
+
+	if body_first_line.len > 0 {
+		return body_first_line
 	}
-	return result
+	return 'Skill'
 }

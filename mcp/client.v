@@ -2,7 +2,7 @@ module mcp
 
 import os
 import time
-import json
+import json2
 
 const default_mcp_request_timeout_ms = 30000
 
@@ -163,6 +163,8 @@ pub fn (mut m McpManager) try_start_lazy_server_for_tool(tool_name string) bool 
 }
 
 pub fn (mut m McpManager) call_tool(tool_name string, arguments string) !McpToolResult {
+	m.mu.lock()
+	defer { m.mu.unlock() }
 	if mut server := m.find_connected_server_for_tool(tool_name) {
 		return mcp_call_tool(mut server, tool_name, arguments)
 	}
@@ -186,9 +188,7 @@ fn start_mcp_server(mut server McpServer) {
 		&& os.is_executable(server.command) {
 		server.command
 	} else {
-		os.find_abs_path_of_executable(server.command) or {
-			return
-		}
+		os.find_abs_path_of_executable(server.command) or { return }
 	}
 
 	mut proc := build_mcp_process(server, cmd)
@@ -258,11 +258,11 @@ fn stop_mcp_server(mut server McpServer) {
 
 // --- JSON-RPC Communication ---
 
-fn mcp_send_request(mut server McpServer, method string, params string) !string {
-	return mcp_send_request_with_timeout(mut server, method, params, default_mcp_request_timeout_ms)
+fn send_request(mut server McpServer, method string, params string) !string {
+	return send_request_with_timeout(mut server, method, params, default_mcp_request_timeout_ms)
 }
 
-fn mcp_send_request_with_timeout(mut server McpServer, method string, params string, timeout_ms int) !string {
+fn send_request_with_timeout(mut server McpServer, method string, params string, timeout_ms int) !string {
 	server.request_id++
 	id := server.request_id
 
@@ -274,10 +274,10 @@ fn mcp_send_request_with_timeout(mut server McpServer, method string, params str
 
 	server.process.stdin_write(request)
 
-	return mcp_read_response(mut server, id, timeout_ms)
+	return read_response(mut server, id, timeout_ms)
 }
 
-fn mcp_send_notification(mut server McpServer, method string, params string) {
+fn send_notification(mut server McpServer, method string, params string) {
 	mut request := '{"jsonrpc":"2.0","method":"${method}"'
 	if params.len > 0 {
 		request += ',"params":${params}'
@@ -286,7 +286,7 @@ fn mcp_send_notification(mut server McpServer, method string, params string) {
 	server.process.stdin_write(request)
 }
 
-fn mcp_read_response(mut server McpServer, expected_id int, timeout_ms int) !string {
+fn read_response(mut server McpServer, expected_id int, timeout_ms int) !string {
 	mut line_buffer := ''
 	mut attempts := 0
 	max_attempts := (timeout_ms + 199) / 200
@@ -345,127 +345,30 @@ fn mcp_read_response(mut server McpServer, expected_id int, timeout_ms int) !str
 // --- MCP Protocol ---
 
 fn mcp_initialize(mut server McpServer) bool {
-	params := '{"protocolVersion":"2024-11-05","capabilities":{"roots":{"listChanged":true}},"clientInfo":{"name":"wink-code","version":"0.0.1"}}'
-	response := mcp_send_request_with_timeout(mut server, 'initialize', params, 60000) or {
+	params := '{"protocolVersion":"2024-11-05","capabilities":{"roots":{"listChanged":true}},"clientInfo":{"name":"wink-code","version":"0.0.1.5"}}'
+	response := send_request_with_timeout(mut server, 'initialize', params, 60000) or {
 		return false
 	}
 	if response.contains('"id"') && !response.contains('"error"') {
-		mcp_send_notification(mut server, 'notifications/initialized', '{}')
+		send_notification(mut server, 'notifications/initialized', '{}')
 		return true
 	}
 	return false
 }
 
 fn mcp_list_tools(mut server McpServer) {
-	response := mcp_send_request_with_timeout(mut server, 'tools/list', '{}', 30000) or {
-		return
-	}
+	response := send_request_with_timeout(mut server, 'tools/list', '{}', 30000) or { return }
 	server.tools = parse_mcp_tools(response)
 }
 
 fn mcp_call_tool(mut server McpServer, tool_name string, arguments string) !McpToolResult {
 	params := '{"name":"${tool_name}","arguments":${arguments}}'
-	response := mcp_send_request_with_timeout(mut server, 'tools/call', params, default_mcp_request_timeout_ms) or {
-		return error('MCP call failed: ${err}')
-	}
+	response := send_request_with_timeout(mut server, 'tools/call', params,
+		default_mcp_request_timeout_ms) or { return error('MCP call failed: ${err}') }
 	return parse_mcp_call_result(response)
 }
 
-// --- Response Parsing ---
 
-fn extract_json_string_field(json_str string, field string) string {
-	key := '"${field}"'
-	idx := json_str.index(key) or { return '' }
-	if idx < 0 {
-		return ''
-	}
-	mut start := idx + key.len
-	// skip colon and whitespace
-	for start < json_str.len && (json_str[start] == `:` || json_str[start] == ` ` || json_str[start] == `\t`) {
-		start++
-	}
-	if start >= json_str.len {
-		return ''
-	}
-	if json_str[start] != `"` {
-		return ''
-	}
-	start++ // skip opening quote
-	mut end := start
-	mut escaped := false
-	for end < json_str.len {
-		c := json_str[end]
-		if escaped {
-			escaped = false
-			end++
-			continue
-		}
-		if c == `\\` {
-			escaped = true
-			end++
-			continue
-		}
-		if c == `"` {
-			break
-		}
-		end++
-	}
-	if end >= json_str.len {
-		return ''
-	}
-	return json_str[start..end]
-}
-
-fn extract_json_string_array(json_str string, field string) []string {
-	key := '"${field}"'
-	idx := json_str.index(key) or { return []string{} }
-	if idx < 0 {
-		return []string{}
-	}
-	mut start := idx + key.len
-	for start < json_str.len && (json_str[start] == `:` || json_str[start] == ` ` || json_str[start] == `\t`) {
-		start++
-	}
-	if start >= json_str.len || json_str[start] != `[` {
-		return []string{}
-	}
-	start++ // skip [
-	mut result := []string{}
-	mut i := start
-	for i < json_str.len {
-		if json_str[i] == `"` {
-			i++
-			mut s_start := i
-			mut escaped := false
-			for i < json_str.len {
-				if escaped {
-					escaped = false
-					i++
-					continue
-				}
-				if json_str[i] == `\\` {
-					escaped = true
-					i++
-					continue
-				}
-				if json_str[i] == `"` {
-					break
-				}
-				i++
-			}
-			if i < json_str.len {
-				result << json_str[s_start..i]
-			}
-		}
-		for i < json_str.len && json_str[i] != `"` {
-			if json_str[i] == `]` {
-				return result
-			}
-			i++
-		}
-	}
-	return result
-}
 
 pub fn (m McpManager) get_tool_schemas(api_format string) string {
 	tools := m.get_all_tools()
@@ -475,184 +378,79 @@ pub fn (m McpManager) get_tool_schemas(api_format string) string {
 	mut parts := []string{}
 	for tool in tools {
 		if api_format == 'openai' {
-			parts << '{"type":"function","function":{"name":${json.encode(tool.name)},"description":${json.encode(tool.description)},"parameters":${tool.raw_schema}}}'
+			parts << '{"type":"function","function":{"name":${json2.encode(tool.name)},"description":${json2.encode(tool.description)},"parameters":${tool.raw_schema}}}'
 		} else {
-			parts << '{"name":${json.encode(tool.name)},"description":${json.encode(tool.description)},"input_schema":${tool.raw_schema}}'
+			parts << '{"name":${json2.encode(tool.name)},"description":${json2.encode(tool.description)},"input_schema":${tool.raw_schema}}'
 		}
 	}
 	return '[${parts.join(',')}]'
 }
 
+struct McpToolsListResponse {
+pub:
+	result McpToolsListResult
+}
+
+struct McpToolsListResult {
+pub:
+	tools []McpToolItem
+}
+
+struct McpToolItem {
+pub:
+	name         string
+	description  string
+	input_schema json2.Any @[json: 'inputSchema']
+}
+
 fn parse_mcp_tools(response string) []McpTool {
-	mut tools := []McpTool{}
-	// Find the tools array
-	tools_idx := response.index('"tools"') or { return tools }
-	if tools_idx < 0 {
-		return tools
+	data := json2.decode[McpToolsListResponse](response) or {
+		return []McpTool{}
 	}
-	// Find the array start after "tools":
-	arr_start := response.index_after('[{', tools_idx) or { return tools }
-	// Parse individual tool objects by counting braces
-	mut depth := 0
-	mut in_string := false
-	mut escaped := false
-	mut obj_start := -1
-	for i := arr_start; i < response.len; i++ {
-		c := response[i]
-		if escaped {
-			escaped = false
-			continue
+	mut tools := []McpTool{}
+	for item in data.result.tools {
+		schema_str := item.input_schema.str()
+		raw_schema := if schema_str.len > 0 && schema_str != '""' && schema_str != 'null' {
+			schema_str
+		} else {
+			'{}'
 		}
-		if c == `\\` && in_string {
-			escaped = true
-			continue
-		}
-		if c == `"` {
-			in_string = !in_string
-			continue
-		}
-		if in_string {
-			continue
-		}
-		if c == `{` {
-			if depth == 0 {
-				obj_start = i
+
+		mut properties := []string{}
+		mut required := []string{}
+
+		if raw_schema != '{}' {
+			schema_map := item.input_schema.as_map()
+			if props_any := schema_map['properties'] {
+				for prop_name, _ in props_any.as_map() {
+					properties << prop_name
+				}
 			}
-			depth++
-		} else if c == `}` {
-			depth--
-			if depth == 0 && obj_start >= 0 {
-				obj_str := response[obj_start..i + 1]
-				tools << parse_single_mcp_tool(obj_str)
-				obj_start = -1
+			if req_any := schema_map['required'] {
+				for req_item in req_any.as_array() {
+					required << req_item.str()
+				}
 			}
-		} else if c == `]` && depth == 0 {
-			break
+		}
+
+		mut params := []McpToolParam{}
+		for prop_name in properties {
+			params << McpToolParam{
+				name:        prop_name
+				description: ''
+				param_type:  'string'
+				required:    required.contains(prop_name)
+			}
+		}
+
+		tools << McpTool{
+			name:        item.name
+			description: item.description
+			params:      params
+			raw_schema:  raw_schema
 		}
 	}
 	return tools
-}
-
-fn parse_single_mcp_tool(obj string) McpTool {
-	name := extract_json_string_field(obj, 'name')
-	description := extract_json_string_field(obj, 'description')
-
-	// Extract inputSchema as raw JSON (minimax-v approach)
-	mut raw_schema := '{}'
-	if schema_idx := obj.index('"inputSchema":') {
-		mut schema_start := schema_idx + 14
-		for schema_start < obj.len && obj[schema_start] in [` `, `\t`, `\n`, `\r`] {
-			schema_start++
-		}
-		if schema_start < obj.len && obj[schema_start] == `{` {
-			mut depth := 0
-			mut in_str := false
-			mut escaped := false
-			for q := schema_start; q < obj.len; q++ {
-				c := obj[q]
-				if escaped {
-					escaped = false
-					continue
-				}
-				if c == `\\` && in_str {
-					escaped = true
-					continue
-				}
-				if c == `"` {
-					in_str = !in_str
-					continue
-				}
-				if in_str {
-					continue
-				}
-				if c == `{` {
-					depth++
-				} else if c == `}` {
-					depth--
-					if depth == 0 {
-						raw_schema = obj[schema_start..q + 1]
-						break
-					}
-				}
-			}
-		}
-	}
-
-	mut properties := []string{}
-	mut required := []string{}
-	if raw_schema != '{}' {
-		properties = extract_json_string_array_from_schema(raw_schema, 0, 'properties')
-		required = extract_json_string_array_from_schema(raw_schema, 0, 'required')
-	}
-	mut params := []McpToolParam{}
-	for prop_name in properties {
-		mut param := McpToolParam{
-			name:        prop_name
-			description: ''
-			param_type:  'string'
-			required:    required.contains(prop_name)
-		}
-		params << param
-	}
-	return McpTool{
-		name:        name
-		description: description
-		params:      params
-		raw_schema:  raw_schema
-	}
-}
-
-fn extract_json_string_array_from_schema(obj string, start_idx int, field string) []string {
-	key := '"${field}"'
-	mut idx := obj.index_after(key, start_idx) or { return []string{} }
-	if idx < 0 {
-		return []string{}
-	}
-	// skip to [
-	for idx < obj.len && (obj[idx] == `:` || obj[idx] == ` ` || obj[idx] == `\t`) {
-		idx++
-	}
-	if idx >= obj.len || obj[idx] != `[` {
-		return []string{}
-	}
-	idx++ // skip [
-	mut result := []string{}
-	mut i := idx
-	for i < obj.len {
-		if obj[i] == `"` {
-			i++
-			mut s_start := i
-			mut escaped := false
-			for i < obj.len {
-				c := obj[i]
-				if escaped {
-					escaped = false
-					i++
-					continue
-				}
-				if c == `\\` {
-					escaped = true
-					i++
-					continue
-				}
-				if c == `"` {
-					break
-				}
-				i++
-			}
-			if i < obj.len {
-				result << obj[s_start..i]
-				i++ // skip closing quote
-			}
-		}
-		for i < obj.len && obj[i] != `"` && obj[i] != `]` {
-			i++
-		}
-		if i < obj.len && obj[i] == `]` {
-			break
-		}
-	}
-	return result
 }
 
 struct McpCallResultResponse {
@@ -662,14 +460,14 @@ struct McpCallResultResponse {
 }
 
 struct McpContentItem {
-	typ        string @[json: 'type']
-	text       string
-	data       string @[json: 'data']
-	mime_type  string @[json: 'mimeType']
+	typ       string @[json: 'type']
+	text      string
+	data      string @[json: 'data']
+	mime_type string @[json: 'mimeType']
 }
 
 fn parse_mcp_call_result(response string) !McpToolResult {
-	data := json.decode(McpCallResultResponse, response) or {
+	data := json2.decode[McpCallResultResponse](response) or {
 		return error('Failed to parse MCP response: ${err}')
 	}
 	mut texts := []string{}
@@ -684,7 +482,11 @@ fn parse_mcp_call_result(response string) !McpToolResult {
 			'image' {
 				if item.data.len > 0 {
 					mime := if item.mime_type.len > 0 { item.mime_type } else { 'image/png' }
-					images << McpImageData{data: item.data, mime_type: mime, name: ''}
+					images << McpImageData{
+						data:      item.data
+						mime_type: mime
+						name:      ''
+					}
 				}
 			}
 			'resource' {
@@ -695,7 +497,7 @@ fn parse_mcp_call_result(response string) !McpToolResult {
 		}
 	}
 	return McpToolResult{
-		text: texts.join('\n')
+		text:   texts.join('\n')
 		images: images
 	}
 }

@@ -3,6 +3,7 @@ module tui
 const slash_commands = [
 	AutocompleteItem{'/model', 'show/switch model'},
 	AutocompleteItem{'/effort', 'show/set effort'},
+	AutocompleteItem{'/retry', 'retry the last prompt'},
 	AutocompleteItem{'/help', 'show help'},
 	AutocompleteItem{'/clear', 'clear conversation'},
 	AutocompleteItem{'/compact', 'manually compact context'},
@@ -16,56 +17,183 @@ struct AutocompleteItem {
 
 // === Input view calculation ===
 
-pub fn get_input_view(input []rune, cursor_pos int, content_width int) (string, int) {
+const max_input_visible_lines = 8
+
+pub struct MultiLineInputView {
+pub:
+	lines      []string
+	cursor_row int
+	cursor_col int
+}
+
+// calculate_multiline_input_view splits input by \n and wraps lines according to content_width,
+// returning lines and the exact cursor_row and cursor_col.
+pub fn calculate_multiline_input_view(input []rune, cursor_pos int, content_width int) MultiLineInputView {
 	if content_width <= 0 {
-		return '', 0
+		return MultiLineInputView{
+			lines:      ['']
+			cursor_row: 0
+			cursor_col: 0
+		}
 	}
 
+	mut lines := []string{}
+	mut cur_line := []rune{}
+	mut cur_width := 0
+	mut cursor_row := 0
 	mut cursor_col := 0
-	for i := 0; i < cursor_pos && i < input.len; i++ {
-		cursor_col += visual_width_char(input[i])
-	}
+	mut found_cursor := false
 
-	mut total_width := 0
-	for r in input {
-		total_width += visual_width_char(r)
-	}
-
-	if total_width <= content_width {
-		return input.string(), cursor_col
-	}
-
-	mut scroll := 0
-	if cursor_col >= content_width - 2 {
-		scroll = cursor_col - content_width + 3
-		if scroll < 0 {
-			scroll = 0
+	for i := 0; i <= input.len; i++ {
+		is_at_cursor := i == cursor_pos
+		if is_at_cursor {
+			cursor_row = lines.len
+			cursor_col = cur_width
+			found_cursor = true
 		}
-	}
 
-	mut col := 0
-	mut start_idx := 0
-	for i := 0; i < input.len; i++ {
-		w := visual_width_char(input[i])
-		if col >= scroll {
-			start_idx = i
+		if i == input.len {
 			break
 		}
-		col += w
-	}
 
-	mut visible := []rune{}
-	mut width := 0
-	for i := start_idx; i < input.len; i++ {
-		w := visual_width_char(input[i])
-		if width + w > content_width {
-			break
+		r := input[i]
+		if r == `\n` {
+			lines << cur_line.string()
+			cur_line = []rune{}
+			cur_width = 0
+			continue
 		}
-		visible << input[i]
-		width += w
+
+		rw := visual_width_char(r)
+		if cur_width + rw > content_width {
+			lines << cur_line.string()
+			cur_line = []rune{}
+			cur_width = 0
+		}
+
+		cur_line << r
+		cur_width += rw
 	}
 
-	return visible.string(), cursor_col - scroll
+	lines << cur_line.string()
+	if !found_cursor {
+		cursor_row = lines.len - 1
+		cursor_col = cur_width
+	}
+
+	return MultiLineInputView{
+		lines:      lines
+		cursor_row: cursor_row
+		cursor_col: cursor_col
+	}
+}
+
+pub fn (app App) get_input_content_height(content_width int) int {
+	view := calculate_multiline_input_view(app.input, app.cursor_pos, content_width)
+	h := view.lines.len
+	if h < 1 {
+		return 1
+	}
+	if h > max_input_visible_lines {
+		return max_input_visible_lines
+	}
+	return h
+}
+
+// move_cursor_up moves cursor up one line, or returns false if already on top line.
+pub fn (mut app App) move_cursor_up(content_width int) bool {
+	view := calculate_multiline_input_view(app.input, app.cursor_pos, content_width)
+	if view.cursor_row <= 0 {
+		return false
+	}
+	target_row := view.cursor_row - 1
+	target_col := view.cursor_col
+
+	// Find the rune index corresponding to target_row and target_col
+	mut cur_row := 0
+	mut cur_col := 0
+	for i := 0; i < app.input.len; i++ {
+		r := app.input[i]
+		if cur_row == target_row && cur_col >= target_col {
+			app.cursor_pos = i
+			return true
+		}
+		if r == `\n` {
+			if cur_row == target_row {
+				app.cursor_pos = i
+				return true
+			}
+			cur_row++
+			cur_col = 0
+			continue
+		}
+		rw := visual_width_char(r)
+		if cur_col + rw > content_width {
+			if cur_row == target_row {
+				app.cursor_pos = i
+				return true
+			}
+			cur_row++
+			cur_col = 0
+		}
+		cur_col += rw
+	}
+	return false
+}
+
+// move_cursor_down moves cursor down one line, or returns false if already on bottom line.
+pub fn (mut app App) move_cursor_down(content_width int) bool {
+	view := calculate_multiline_input_view(app.input, app.cursor_pos, content_width)
+	if view.cursor_row >= view.lines.len - 1 {
+		return false
+	}
+	target_row := view.cursor_row + 1
+	target_col := view.cursor_col
+
+	mut cur_row := 0
+	mut cur_col := 0
+	for i := 0; i < app.input.len; i++ {
+		r := app.input[i]
+		if cur_row == target_row && cur_col >= target_col {
+			app.cursor_pos = i
+			return true
+		}
+		if r == `\n` {
+			if cur_row == target_row {
+				app.cursor_pos = i
+				return true
+			}
+			cur_row++
+			cur_col = 0
+			continue
+		}
+		rw := visual_width_char(r)
+		if cur_col + rw > content_width {
+			if cur_row == target_row {
+				app.cursor_pos = i
+				return true
+			}
+			cur_row++
+			cur_col = 0
+		}
+		cur_col += rw
+	}
+	app.cursor_pos = app.input.len
+	return true
+}
+
+// move_cursor_to_line_start moves to current visual line's start.
+pub fn (mut app App) move_cursor_to_line_start() {
+	for app.cursor_pos > 0 && app.input[app.cursor_pos - 1] != `\n` {
+		app.cursor_pos--
+	}
+}
+
+// move_cursor_to_line_end moves to current visual line's end.
+pub fn (mut app App) move_cursor_to_line_end() {
+	for app.cursor_pos < app.input.len && app.input[app.cursor_pos] != `\n` {
+		app.cursor_pos++
+	}
 }
 
 // === Autocomplete management ===
@@ -117,15 +245,7 @@ pub fn (mut app App) insert_rune_at_cursor(r rune) {
 	if app.cursor_pos >= app.input.len {
 		app.input << r
 	} else {
-		mut new_input := []rune{}
-		for i := 0; i < app.cursor_pos; i++ {
-			new_input << app.input[i]
-		}
-		new_input << r
-		for i := app.cursor_pos; i < app.input.len; i++ {
-			new_input << app.input[i]
-		}
-		app.input = new_input
+		app.input.insert(app.cursor_pos, r)
 	}
 	app.cursor_pos++
 }
@@ -134,13 +254,7 @@ pub fn (mut app App) delete_rune_before_cursor() {
 	if app.cursor_pos <= 0 || app.input.len == 0 {
 		return
 	}
-	mut new_input := []rune{}
-	for i := 0; i < app.input.len; i++ {
-		if i != app.cursor_pos - 1 {
-			new_input << app.input[i]
-		}
-	}
-	app.input = new_input
+	app.input.delete(app.cursor_pos - 1)
 	app.cursor_pos--
 }
 
@@ -155,13 +269,9 @@ pub fn (mut app App) delete_word_backward() {
 	for pos > 0 && app.input[pos - 1] != ` ` {
 		pos--
 	}
-	mut new_input := []rune{}
-	for i := 0; i < pos; i++ {
-		new_input << app.input[i]
-	}
-	for i := app.cursor_pos; i < app.input.len; i++ {
-		new_input << app.input[i]
-	}
+	mut new_input := []rune{cap: app.input.len - (app.cursor_pos - pos)}
+	new_input << app.input[..pos]
+	new_input << app.input[app.cursor_pos..]
 	app.input = new_input
 	app.cursor_pos = pos
 }
@@ -170,11 +280,7 @@ pub fn (mut app App) delete_to_line_start() {
 	if app.cursor_pos == 0 {
 		return
 	}
-	mut new_input := []rune{}
-	for i := app.cursor_pos; i < app.input.len; i++ {
-		new_input << app.input[i]
-	}
-	app.input = new_input
+	app.input = app.input[app.cursor_pos..].clone()
 	app.cursor_pos = 0
 }
 
@@ -182,95 +288,5 @@ pub fn (mut app App) delete_to_line_end() {
 	if app.cursor_pos >= app.input.len {
 		return
 	}
-	mut new_input := []rune{}
-	for i := 0; i < app.cursor_pos; i++ {
-		new_input << app.input[i]
-	}
-	app.input = new_input
-}
-
-// === Selector management ===
-
-pub fn (mut app App) open_model_selector() {
-	names := app.ag.get_model_names()
-	current := app.ag.get_model()
-	mut items := []SelectorItem{}
-	for name in names {
-		provider := app.ag.get_model_provider(name)
-		items << SelectorItem{
-			value: name
-			label: name
-			badge: provider
-			is_current: name == current
-		}
-	}
-	app.selector.open(items, 'Select Model', fn [mut app] (item SelectorItem) {
-		app.ag.set_model(item.value) or {
-			app.push_message('error', err.str())
-			return
-		}
-		app.push_message('system', 'Model: ${app.ag.get_model()}')
-	}, fn () {})
-	app.mode = .selector
-}
-
-pub fn (mut app App) open_effort_selector() {
-	current := app.ag.get_effort()
-	levels := ['low', 'medium', 'high', 'max']
-	mut items := []SelectorItem{}
-	for level in levels {
-		items << SelectorItem{
-			value: level
-			label: level
-			badge: ''
-			is_current: level == current
-		}
-	}
-	app.selector.open(items, 'Select Effort', fn [mut app] (item SelectorItem) {
-		app.ag.set_effort(item.value) or {
-			app.push_message('error', err.str())
-			return
-		}
-		app.push_message('system', 'Effort: ${app.ag.get_effort()}')
-	}, fn () {})
-	app.mode = .selector
-}
-
-pub fn (mut app App) open_mcp_selector() {
-	mut items := []SelectorItem{}
-	for mut server in app.ag.mcp_manager.servers {
-		status := if server.disabled { 'disabled' } else if server.is_connected { 'connected' } else { 'idle' }
-		items << SelectorItem{
-			value: server.name
-			label: server.name
-			badge: status
-			is_current: false
-		}
-	}
-	app.selector.open(items, 'Manage MCP', fn [mut app] (item SelectorItem) {
-		// Enter on MCP item opens /mcp toggle command
-		app.handle_command('/mcp toggle ${item.value}')
-		app.close_selector()
-	}, fn [mut app] () {
-		// Space toggles the selected MCP server
-		if app.selector.filtered.len == 0 {
-			return
-		}
-		item := app.selector.filtered[app.selector.selected]
-		app.handle_command('/mcp toggle ${item.value}')
-	})
-	app.mode = .selector
-}
-
-pub fn (mut app App) close_selector() {
-	app.selector.close()
-	app.mode = .normal
-}
-
-pub fn (mut app App) update_selector_filter() {
-	app.selector.update_filter(app.selector.filter.string())
-}
-
-pub fn (mut app App) selector_confirm() {
-	app.selector.confirm()
+	app.input = app.input[..app.cursor_pos].clone()
 }

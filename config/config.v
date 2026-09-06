@@ -1,7 +1,7 @@
 module config
 
 import os
-import json
+import json2
 
 pub struct CompatConfig {
 pub:
@@ -10,7 +10,7 @@ pub:
 
 pub struct ProviderConfig {
 pub:
-	api      string            @[json: "api"]      // "anthropic" or "openai"
+	api      string            @[json: "api"] // "anthropic" or "openai"
 	base_url string            @[json: "baseUrl"]
 	headers  map[string]string @[json: "headers"]
 	compat   CompatConfig      @[json: "compat"]
@@ -18,9 +18,10 @@ pub:
 
 pub struct ModelConfig {
 pub:
-	provider   string @[json: "provider"]
-	max_tokens int    @[json: "maxTokens"]
-	reasoning  bool   @[json: "reasoning"]
+	provider       string @[json: "provider"]
+	max_tokens     int    @[json: "maxTokens"]
+	context_window int    @[json: "contextWindow"]
+	reasoning      bool   @[json: "reasoning"]
 }
 
 // AppConfig maps to ~/.winkcode/config.json
@@ -39,6 +40,7 @@ pub:
 	api_url         string
 	model           string
 	max_tokens      int
+	context_window  int
 	api_format      string // "anthropic" or "openai"
 	effort          string // "low", "medium", "high", "max"
 	thinking_format string // "", "openrouter", "zai"
@@ -54,18 +56,18 @@ pub mut:
 	models        map[string]ModelConfig
 	auth          map[string]string
 	// Session state
-	current_session_id     string
-	current_session_path   string
+	current_session_id   string
+	current_session_path string
 }
 
 fn builtin_providers() map[string]ProviderConfig {
 	return {
 		'anthropic': ProviderConfig{
-			api: 'anthropic'
+			api:      'anthropic'
 			base_url: 'https://api.anthropic.com'
 		}
-		'openai': ProviderConfig{
-			api: 'openai'
+		'openai':    ProviderConfig{
+			api:      'openai'
 			base_url: 'https://api.openai.com/v1'
 		}
 	}
@@ -73,41 +75,41 @@ fn builtin_providers() map[string]ProviderConfig {
 
 fn builtin_models() map[string]ModelConfig {
 	return {
-		'claude-opus-4-8': ModelConfig{
-			provider: 'anthropic'
+		'claude-opus-4-8':   ModelConfig{
+			provider:   'anthropic'
 			max_tokens: 16384
-			reasoning: true
+			reasoning:  true
 		}
-		'claude-opus-4-7': ModelConfig{
-			provider: 'anthropic'
+		'claude-opus-4-7':   ModelConfig{
+			provider:   'anthropic'
 			max_tokens: 16384
-			reasoning: true
+			reasoning:  true
 		}
-		'claude-opus-4-6': ModelConfig{
-			provider: 'anthropic'
+		'claude-opus-4-6':   ModelConfig{
+			provider:   'anthropic'
 			max_tokens: 16384
-			reasoning: true
+			reasoning:  true
 		}
 		'claude-sonnet-4-6': ModelConfig{
-			provider: 'anthropic'
+			provider:   'anthropic'
 			max_tokens: 16384
-			reasoning: true
+			reasoning:  true
 		}
-		'claude-haiku-4-5': ModelConfig{
-			provider: 'anthropic'
+		'claude-haiku-4-5':  ModelConfig{
+			provider:   'anthropic'
 			max_tokens: 8192
-			reasoning: true
+			reasoning:  true
 		}
-		'gpt-5.5': ModelConfig{
-			provider: 'openai'
+		'gpt-5.5':           ModelConfig{
+			provider:   'openai'
 			max_tokens: 16384
 		}
-		'gpt-5.4': ModelConfig{
-			provider: 'openai'
+		'gpt-5.4':           ModelConfig{
+			provider:   'openai'
 			max_tokens: 16384
 		}
-		'gpt-5.3': ModelConfig{
-			provider: 'openai'
+		'gpt-5.3':           ModelConfig{
+			provider:   'openai'
 			max_tokens: 8192
 		}
 	}
@@ -150,10 +152,10 @@ pub fn load() Config {
 
 	return Config{
 		current_model: default_model
-		effort: effort
-		providers: providers
-		models: models
-		auth: auth
+		effort:        effort
+		providers:     providers
+		models:        models
+		auth:          auth
 	}
 }
 
@@ -162,7 +164,9 @@ fn load_auth() map[string]string {
 	if os.exists(auth_path()) {
 		data := os.read_file(auth_path()) or { '' }
 		if data.len > 0 {
-			loaded := json.decode(map[string]string, data) or { map[string]string{} }
+			loaded := json2.decode[map[string]string](data) or {
+				map[string]string{}
+			}
 			for k, v in loaded {
 				auth[k] = v
 			}
@@ -190,7 +194,7 @@ fn load_config_file() AppConfig {
 	if data.len == 0 {
 		return AppConfig{}
 	}
-	return json.decode(AppConfig, data) or { AppConfig{} }
+	return json2.decode[AppConfig](data) or { AppConfig{} }
 }
 
 fn apply_env_overrides(mut providers map[string]ProviderConfig, default_model string) string {
@@ -200,10 +204,10 @@ fn apply_env_overrides(mut providers map[string]ProviderConfig, default_model st
 	if anthropic_url.len > 0 && 'anthropic' in providers {
 		old := providers['anthropic']
 		providers['anthropic'] = ProviderConfig{
-			api: old.api
+			api:      old.api
 			base_url: anthropic_url
-			headers: old.headers
-			compat: old.compat
+			headers:  old.headers
+			compat:   old.compat
 		}
 	}
 
@@ -233,20 +237,32 @@ pub fn (c &Config) resolve_model(model_name string) !ResolvedConfig {
 		api_url = api_url[..api_url.len - 1]
 	}
 	match provider_cfg.api {
-		'anthropic' { api_url += '/v1/messages' }
-		'openai' { api_url += '/chat/completions' }
+		'anthropic' {
+			if api_url.ends_with('/v1') {
+				api_url = api_url[..api_url.len - 3]
+			}
+			api_url += '/v1/messages'
+		}
+		'openai' {
+			if !api_url.ends_with('/v1') {
+				api_url += '/v1'
+			}
+			api_url += '/chat/completions'
+		}
 		else {}
 	}
 
+	context_win := if model_cfg.context_window > 0 { model_cfg.context_window } else { 256_000 }
 	return ResolvedConfig{
-		api_key: api_key
-		api_url: api_url
-		model: model_name
-		max_tokens: model_cfg.max_tokens
-		api_format: provider_cfg.api
-		effort: c.effort
+		api_key:         api_key
+		api_url:         api_url
+		model:           model_name
+		max_tokens:      model_cfg.max_tokens
+		context_window:  context_win
+		api_format:      provider_cfg.api
+		effort:          c.effort
 		thinking_format: provider_cfg.compat.thinking_format
-		reasoning: model_cfg.reasoning
+		reasoning:       model_cfg.reasoning
 	}
 }
 

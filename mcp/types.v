@@ -1,6 +1,7 @@
 module mcp
 
 import os
+import sync
 
 pub struct McpToolParam {
 pub:
@@ -37,12 +38,13 @@ pub mut:
 pub struct McpManager {
 pub mut:
 	servers []&McpServer
+	mu      &sync.Mutex = sync.new_mutex()
 }
 
 pub struct McpToolResult {
 pub:
-	text      string
-	images    []McpImageData
+	text   string
+	images []McpImageData
 }
 
 pub struct McpImageData {

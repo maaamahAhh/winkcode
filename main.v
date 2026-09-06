@@ -6,12 +6,12 @@ import tui
 import agent
 import session
 
-const version = '0.0.1'
+const version = '0.0.1.5'
 
 struct CliArgs {
 mut:
-	continue_   bool
-	resume_id   string
+	continue_ bool
+	resume_id string
 }
 
 fn parse_cli_args(args []string) CliArgs {
@@ -60,7 +60,10 @@ fn main() {
 		exit(1)
 	}
 
-	mut ag := agent.new_agent(cfg)
+	mut ag := agent.new_agent(cfg) or {
+		eprintln('Error: ${err}')
+		exit(1)
+	}
 
 	// Handle session flags
 	if cli.resume_id.len > 0 {

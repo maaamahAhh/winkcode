@@ -17,7 +17,7 @@ mut:
 	selected   int
 	filter     []rune
 	on_confirm fn (SelectorItem) = unsafe { nil }
-	on_toggle  fn () = unsafe { nil }
+	on_toggle  fn ()             = unsafe { nil }
 	title      string
 }
 
@@ -59,7 +59,8 @@ pub fn (mut s SelectorState) toggle() {
 pub fn (mut s SelectorState) update_filter(query string) {
 	mut filtered := []SelectorItem{}
 	for item in s.items {
-		if fuzzy_match(query, item.value) || fuzzy_match(query, item.label) || fuzzy_match(query, item.badge) {
+		if fuzzy_match(query, item.value) || fuzzy_match(query, item.label)
+			|| fuzzy_match(query, item.badge) {
 			filtered << item
 		}
 	}
@@ -92,4 +93,98 @@ pub fn fuzzy_match(query string, text string) bool {
 		}
 	}
 	return qi >= ql.len
+}
+
+// === App selector workflows ===
+
+pub fn (mut app App) open_model_selector() {
+	names := app.ag.get_model_names()
+	current := app.ag.get_model()
+	mut items := []SelectorItem{}
+	for name in names {
+		provider := app.ag.get_model_provider(name)
+		items << SelectorItem{
+			value:      name
+			label:      name
+			badge:      provider
+			is_current: name == current
+		}
+	}
+	app.selector.open(items, 'Select Model', fn [mut app] (item SelectorItem) {
+		app.ag.set_model(item.value) or {
+			app.push_message('error', err.str())
+			app.close_selector()
+			return
+		}
+		app.push_message('system', 'Model: ${app.ag.get_model()}')
+		app.close_selector()
+	}, fn () {})
+	app.mode = .selector
+}
+
+pub fn (mut app App) open_effort_selector() {
+	current := app.ag.get_effort()
+	levels := ['low', 'medium', 'high', 'max']
+	mut items := []SelectorItem{}
+	for level in levels {
+		items << SelectorItem{
+			value:      level
+			label:      level
+			badge:      ''
+			is_current: level == current
+		}
+	}
+	app.selector.open(items, 'Select Effort', fn [mut app] (item SelectorItem) {
+		app.ag.set_effort(item.value) or {
+			app.push_message('error', err.str())
+			app.close_selector()
+			return
+		}
+		app.push_message('system', 'Effort: ${app.ag.get_effort()}')
+		app.close_selector()
+	}, fn () {})
+	app.mode = .selector
+}
+
+pub fn (mut app App) open_mcp_selector() {
+	mut items := []SelectorItem{}
+	for mut server in app.ag.mcp_manager.servers {
+		status := if server.disabled {
+			'disabled'
+		} else if server.is_connected {
+			'connected'
+		} else {
+			'idle'
+		}
+		items << SelectorItem{
+			value:      server.name
+			label:      server.name
+			badge:      status
+			is_current: false
+		}
+	}
+	app.selector.open(items, 'Manage MCP', fn [mut app] (item SelectorItem) {
+		app.handle_command('/mcp toggle ${item.value}')
+		app.close_selector()
+	}, fn [mut app] () {
+		if app.selector.filtered.len == 0 {
+			return
+		}
+		item := app.selector.filtered[app.selector.selected]
+		app.handle_command('/mcp toggle ${item.value}')
+	})
+	app.mode = .selector
+}
+
+pub fn (mut app App) close_selector() {
+	app.selector.close()
+	app.mode = .normal
+}
+
+pub fn (mut app App) update_selector_filter() {
+	app.selector.update_filter(app.selector.filter.string())
+}
+
+pub fn (mut app App) selector_confirm() {
+	app.selector.confirm()
 }
