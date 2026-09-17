@@ -56,4 +56,4 @@ winkcode -c
 
 ---
 
-<img width="979" height="512" alt="image" src="https://github.com/user-attachments/assets/9f3721d5-3b16-4f1a-80c5-7f50cae0e6b4" />
+<img width="979" height="512" alt="image" src="https://github.com/user-attachments/assets/a8087e5a-7616-47d3-b4c6-83beec4bd205" />

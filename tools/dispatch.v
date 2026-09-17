@@ -6,7 +6,7 @@ fn tool_definitions() []ToolDef {
 	return [
 		ToolDef{
 			name:        'read'
-			description: 'Read text or image file contents with optional line offset and limit'
+			description: 'Read text, image, audio, or video file contents with optional line offset and limit'
 			params_json: '{"type":"object","properties":{"path":{"type":"string","description":"File path to read"},"offset":{"type":"integer","description":"1-indexed line number to start from"},"limit":{"type":"integer","description":"Number of lines to read"}},"required":["path"]}'
 		},
 		ToolDef{

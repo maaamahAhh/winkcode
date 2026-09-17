@@ -14,9 +14,6 @@ pub fn on_frame(x voidptr) {
 	// Update spinner frame
 	app.spinner_frame = (app.spinner_frame + 1) % spinner_frames.len
 
-	// Header (always visible)
-	mut row := draw_header(mut app, width)
-
 	// Calculate layout
 	footer_height := 1
 	content_width := width - visual_width('│ > ') - visual_width('│')
@@ -45,6 +42,9 @@ pub fn on_frame(x voidptr) {
 		}
 	}
 
+	// Header
+	mut row := draw_header(mut app, width, height, bottom_area_height)
+
 	mut chat_end := height - bottom_area_height
 	if chat_end < row {
 		chat_end = row
@@ -70,21 +70,55 @@ pub fn on_frame(x voidptr) {
 	}
 	visible := calculate_visible_window(all_lines, chat_height, app.scroll_offset)
 	mut visible_lines := visible.lines.clone()
+	mut start_doc_idx := visible.start_index
 
+	mut indent_rows := 0
 	if visible.indicator.len > 0 {
 		apply_color(mut app.ctx, 'dim')
 		app.ctx.draw_text(1, row, truncate_by_width(visible.indicator, chat_width))
 		app.ctx.reset()
 		row++
+		indent_rows = 1
 		if visible_lines.len > chat_height - 1 {
 			visible_lines = visible_lines[1..].clone()
+			start_doc_idx++
 		}
 	}
 
-	for line in visible_lines {
+	app.chat_start_row = row - indent_rows
+	app.chat_end_row = chat_end
+	app.chat_indent_rows = indent_rows
+	app.chat_width = chat_width
+	app.visible_start_doc_idx = start_doc_idx
+	app.all_chat_lines = all_lines.clone()
+	app.visible_chat_lines = visible_lines.clone()
+
+	norm_sel := app.selection.normalized()
+
+	for i, line in visible_lines {
 		if row >= chat_end {
 			break
 		}
+		doc_idx := start_doc_idx + i
+		draw_chat_line(mut app, line, row, doc_idx, chat_width, norm_sel)
+		row++
+	}
+
+	draw_bottom_area(mut app, width, chat_end)
+	draw_footer(mut app, width, height)
+	position_cursor(mut app, width, chat_end)
+
+	app.ctx.flush()
+}
+
+fn draw_chat_line(mut app App, line RenderLine, row int, doc_idx int, chat_width int, norm ?NormalizedSelection) {
+	col_range := if ns := norm {
+		ns.col_range_for_line(doc_idx, chat_width)
+	} else {
+		none
+	}
+
+	if col_range == none {
 		if line.segs.len > 0 {
 			mut col := 1
 			for seg in line.segs {
@@ -98,12 +132,52 @@ pub fn on_frame(x voidptr) {
 			app.ctx.draw_text(1, row, truncate_by_width(line.text, chat_width))
 			app.ctx.reset()
 		}
-		row++
+		return
 	}
 
-	draw_bottom_area(mut app, width, chat_end)
-	draw_footer(mut app, width, height)
-	position_cursor(mut app, width, chat_end)
+	sel_start := col_range.start
+	sel_end := col_range.end
+	mut col := 1
 
-	app.ctx.flush()
+	if line.segs.len > 0 {
+		for seg in line.segs {
+			seg_color := seg.color
+			for r in seg.text.runes() {
+				vw := visual_width_char(r)
+				if col + vw - 1 > chat_width {
+					break
+				}
+				is_sel := (col + vw - 1 >= sel_start) && (col <= sel_end)
+				if is_sel {
+					apply_selection_style(mut app.ctx)
+					app.ctx.draw_text(col, row, r.str())
+					app.ctx.reset()
+				} else {
+					apply_color(mut app.ctx, seg_color)
+					app.ctx.draw_text(col, row, r.str())
+					app.ctx.reset()
+				}
+				col += vw
+			}
+		}
+	} else {
+		line_color := line.color
+		for r in line.text.runes() {
+			vw := visual_width_char(r)
+			if col + vw - 1 > chat_width {
+				break
+			}
+			is_sel := (col + vw - 1 >= sel_start) && (col <= sel_end)
+			if is_sel {
+				apply_selection_style(mut app.ctx)
+				app.ctx.draw_text(col, row, r.str())
+				app.ctx.reset()
+			} else {
+				apply_color(mut app.ctx, line_color)
+				app.ctx.draw_text(col, row, r.str())
+				app.ctx.reset()
+			}
+			col += vw
+		}
+	}
 }

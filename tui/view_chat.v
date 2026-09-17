@@ -531,6 +531,7 @@ pub:
 	lines       []RenderLine
 	indicator   string
 	indent_rows int
+	start_index int
 }
 
 pub fn calculate_visible_window(all_lines []RenderLine, chat_height int, scroll_offset int) VisibleWindow {
@@ -539,6 +540,7 @@ pub fn calculate_visible_window(all_lines []RenderLine, chat_height int, scroll_
 			lines:       all_lines
 			indicator:   ''
 			indent_rows: 0
+			start_index: 0
 		}
 	}
 
@@ -573,5 +575,6 @@ pub fn calculate_visible_window(all_lines []RenderLine, chat_height int, scroll_
 		lines:       all_lines[start_row..end_row]
 		indicator:   indicator
 		indent_rows: indent_rows
+		start_index: start_row
 	}
 }

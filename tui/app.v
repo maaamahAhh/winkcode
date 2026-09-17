@@ -10,10 +10,6 @@ import session
 import sync
 import tools
 
-$if windows {
-	fn C.SetConsoleOutputCP(w_code_page_id u32) bool
-}
-
 const max_messages = 200
 const frame_rate = 24
 
@@ -96,6 +92,20 @@ pub mut:
 	// Git branch cache
 	cached_git_branch string
 	last_git_check    i64
+	// Streaming metrics
+	first_token_time i64
+	last_tok_per_sec f32
+	last_duration_s  f32
+	// Selection state
+	selection             SelectionState
+	chat_start_row        int
+	chat_end_row          int
+	chat_indent_rows      int
+	chat_width            int
+	visible_start_doc_idx int
+	all_chat_lines        []RenderLine
+	visible_chat_lines    []RenderLine
+	last_paste_time       i64
 }
 
 // === Message management ===
@@ -194,6 +204,13 @@ fn (mut app App) flush_session() {
 }
 
 fn (mut app App) do_save_session() {
+	app.mu.lock()
+	has_messages := app.messages.len > 0
+	app.mu.unlock()
+	if !has_messages {
+		return
+	}
+
 	if app.session_path.len == 0 {
 		model := app.ag.get_model()
 		provider := app.ag.config.get_model_provider(model)
@@ -201,7 +218,7 @@ fn (mut app App) do_save_session() {
 		s.session_path = session.session_file_path(s.header)
 		app.session_id = s.header.id
 		app.session_path = s.session_path
-		app.session_append_all(mut s)
+		app.session_rewrite(mut s)
 	} else {
 		mut s := session.load_session(app.session_path) or {
 			app.session_path = ''
@@ -232,12 +249,6 @@ fn (mut app App) session_rewrite(mut s session.Session) {
 			tool_input:  msg.tool_input
 		}
 	}
-	s.save() or {}
-	app.session_id = s.header.id
-	app.session_path = s.session_path
-}
-
-fn (mut app App) session_append_all(mut s session.Session) {
 	s.save() or {}
 	app.session_id = s.header.id
 	app.session_path = s.session_path
@@ -487,12 +498,6 @@ pub fn start(mut ag agent.Agent, version string) {
 				app.header_mode = .compact
 			}
 		}
-	}
-
-	$if windows {
-		// Workaround for upstream term.ui: https://github.com/vlang/v/pull/28072
-		// Ensure non-ASCII/UTF-8 characters render properly on Windows console
-		C.SetConsoleOutputCP(65001)
 	}
 
 	app.ctx = termui.init(

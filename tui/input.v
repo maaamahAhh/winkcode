@@ -242,6 +242,7 @@ pub fn (mut app App) autocomplete_accept() {
 // === Input editing helpers ===
 
 pub fn (mut app App) insert_rune_at_cursor(r rune) {
+	app.selection.clear()
 	if app.cursor_pos >= app.input.len {
 		app.input << r
 	} else {
@@ -251,6 +252,7 @@ pub fn (mut app App) insert_rune_at_cursor(r rune) {
 }
 
 pub fn (mut app App) delete_rune_before_cursor() {
+	app.selection.clear()
 	if app.cursor_pos <= 0 || app.input.len == 0 {
 		return
 	}
@@ -259,6 +261,7 @@ pub fn (mut app App) delete_rune_before_cursor() {
 }
 
 pub fn (mut app App) delete_word_backward() {
+	app.selection.clear()
 	if app.cursor_pos == 0 {
 		return
 	}
@@ -277,6 +280,7 @@ pub fn (mut app App) delete_word_backward() {
 }
 
 pub fn (mut app App) delete_to_line_start() {
+	app.selection.clear()
 	if app.cursor_pos == 0 {
 		return
 	}
@@ -285,8 +289,26 @@ pub fn (mut app App) delete_to_line_start() {
 }
 
 pub fn (mut app App) delete_to_line_end() {
+	app.selection.clear()
 	if app.cursor_pos >= app.input.len {
 		return
 	}
 	app.input = app.input[..app.cursor_pos].clone()
+}
+
+// paste_text inserts text at current cursor position, normalizing newlines and tabs.
+pub fn (mut app App) paste_text(raw_text string) {
+	if raw_text.len == 0 {
+		return
+	}
+	clean_text := raw_text.replace('\r\n', '\n').replace('\r', '\n')
+	for r in clean_text.runes() {
+		if r == `\t` {
+			app.insert_rune_at_cursor(` `)
+			app.insert_rune_at_cursor(` `)
+		} else if r >= 32 || r == `\n` {
+			app.insert_rune_at_cursor(r)
+		}
+	}
+	app.update_autocomplete()
 }

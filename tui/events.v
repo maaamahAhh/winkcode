@@ -92,9 +92,11 @@ pub fn handle_normal_event(mut app App, e &termui.Event) {
 	if is_ctrl || is_ctrl_o {
 		match e.code {
 			.l {
+				app.mu.lock()
 				app.messages = []ChatMessage{}
 				app.streaming_text = ''
 				app.header_mode = .full
+				app.mu.unlock()
 				app.ag.clear_conversation()
 				return
 			}
@@ -135,21 +137,39 @@ pub fn handle_normal_event(mut app App, e &termui.Event) {
 
 	match e.code {
 		.escape {
+			app.mu.lock()
+			if app.selection.has_sel {
+				app.selection.clear()
+				app.mu.unlock()
+				return
+			}
 			if app.is_loading {
-				app.ag.client.aborted = true
-				// Immediately restore input state so user can type next message
-				app.is_loading = false
-				app.status = ''
-			} else {
-				if app.input.len > 0 {
-					app.input = []rune{}
-					app.cursor_pos = 0
-					app.update_autocomplete()
-				}
+				app.abort_query()
+				app.mu.unlock()
+				return
+			}
+			app.mu.unlock()
+			if app.input.len > 0 {
+				app.input = []rune{}
+				app.cursor_pos = 0
+				app.update_autocomplete()
 			}
 		}
 		.c {
-			if e.modifiers == .ctrl {
+			if is_ctrl {
+				app.mu.lock()
+				if app.selection.has_sel {
+					app.copy_selection()
+					app.selection.clear()
+					app.mu.unlock()
+					return
+				}
+				if app.is_loading {
+					app.abort_query()
+					app.mu.unlock()
+					return
+				}
+				app.mu.unlock()
 				app.save_session()
 				exit(0)
 			} else {
@@ -164,6 +184,9 @@ pub fn handle_normal_event(mut app App, e &termui.Event) {
 			}
 		}
 		.enter {
+			app.mu.lock()
+			app.selection.clear()
+			app.mu.unlock()
 			// Shift+Enter, Alt+Enter, or Ctrl+J inserts newline without submitting.
 			// When pasting multiline text, newlines arrive in a rapid burst (< 35ms)
 			// or with pending console input events. In that case, insert newline instead
@@ -278,24 +301,88 @@ pub fn handle_normal_event(mut app App, e &termui.Event) {
 fn on_event(e &termui.Event, x voidptr) {
 	mut app := unsafe { &App(x) }
 
-	// Handle mouse scroll in any mode
-	if e.typ == .mouse_scroll {
-		match e.direction {
-			.up {
-				app.scroll_offset -= 3
-				if app.scroll_offset < 0 {
-					app.scroll_offset = 0
+	// Handle mouse events for selection and scrolling
+	match e.typ {
+		.mouse_down {
+			if e.button == .right {
+				app.mu.lock()
+				now := time.ticks()
+				if app.last_paste_time > 0 && (now - app.last_paste_time) < 250 {
+					app.mu.unlock()
+					return
 				}
+				app.last_paste_time = now
+				text := paste_from_clipboard()
+				app.paste_text(text)
+				app.mu.unlock()
+				return
 			}
-			.down {
-				app.scroll_offset += 3
-				if app.scroll_offset > app.max_scroll_offset {
-					app.scroll_offset = app.max_scroll_offset
+			if e.button == .left {
+				app.mu.lock()
+				line_idx, col := app.screen_to_doc_pos(e.x, e.y)
+				if app.selection.active && (line_idx != app.selection.start_line || col != app.selection.start_col) {
+					app.selection.finish(line_idx, col)
+				} else if e.y >= app.chat_start_row && e.y < app.chat_end_row {
+					app.selection.start(line_idx, col)
+				} else {
+					app.selection.clear()
 				}
+				app.mu.unlock()
 			}
-			else {}
+			return
 		}
-		return
+		.mouse_drag {
+			app.mu.lock()
+			line_idx, col := app.screen_to_doc_pos(e.x, e.y)
+			if !app.selection.active {
+				if e.y >= app.chat_start_row && e.y < app.chat_end_row {
+					app.selection.start(line_idx, col)
+				}
+			} else {
+				app.selection.drag(line_idx, col)
+			}
+			app.mu.unlock()
+			return
+		}
+		.mouse_up {
+			app.mu.lock()
+			if app.selection.active {
+				line_idx, col := app.screen_to_doc_pos(e.x, e.y)
+				app.selection.finish(line_idx, col)
+			}
+			app.mu.unlock()
+			return
+		}
+		.mouse_move {
+			app.mu.lock()
+			if app.selection.active {
+				line_idx, col := app.screen_to_doc_pos(e.x, e.y)
+				app.selection.finish(line_idx, col)
+			}
+			app.mu.unlock()
+			return
+		}
+		.mouse_scroll {
+			app.mu.lock()
+			match e.direction {
+				.up {
+					app.scroll_offset -= 3
+					if app.scroll_offset < 0 {
+						app.scroll_offset = 0
+					}
+				}
+				.down {
+					app.scroll_offset += 3
+					if app.scroll_offset > app.max_scroll_offset {
+						app.scroll_offset = app.max_scroll_offset
+					}
+				}
+				else {}
+			}
+			app.mu.unlock()
+			return
+		}
+		else {}
 	}
 
 	if e.typ != .key_down {

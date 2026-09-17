@@ -42,16 +42,7 @@ fn clean_html_tags_and_entities(s string) string {
 			res << c
 		}
 	}
-	mut text := res.bytestr()
-	text = text.replace('&amp;', '&')
-		.replace('&lt;', '<')
-		.replace('&gt;', '>')
-		.replace('&quot;', '"')
-		.replace('&#39;', "'")
-		.replace('&apos;', "'")
-		.replace('&nbsp;', ' ')
-		.replace('&#0183;', '·')
-	return text.trim_space()
+	return decode_html_entities(res.bytestr()).trim_space()
 }
 
 fn normalize_search_url(raw_url string) string {

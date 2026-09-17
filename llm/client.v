@@ -166,7 +166,7 @@ pub fn (mut c Client) chat_stream(prompt string, on_text OnStreamText, on_tool_c
 		headers.add_custom('anthropic-version', '2023-06-01') or {}
 	}
 	headers.add_custom('content-type', 'application/json') or {}
-	headers.add_custom('User-Agent', 'winkcode/0.0.1.5') or {}
+	headers.add_custom('User-Agent', 'winkcode/0.0.2') or {}
 
 	mut state := StreamState{
 		api_format: c.api_format

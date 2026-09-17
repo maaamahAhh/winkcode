@@ -6,8 +6,11 @@ import strings
 // === Visual width helpers ===
 
 fn is_narrow_unicode(r rune) bool {
-	return (r >= 0x2500 && r <= 0x259f) || (r >= 0x25a0 && r <= 0x25ff)
-		|| (r >= 0x2600 && r <= 0x27bf) || (r >= 0x2800 && r <= 0x28ff)
+	return (r >= 0x2000 && r <= 0x243f)
+		|| (r >= 0x2500 && r <= 0x259f)
+		|| (r >= 0x25a0 && r <= 0x25ff)
+		|| (r >= 0x2600 && r <= 0x27bf)
+		|| (r >= 0x2800 && r <= 0x28ff)
 }
 
 fn visual_width_char(r rune) int {
@@ -217,7 +220,8 @@ fn theme_color(name string) ThemeColor {
 		'red' { ThemeColor{255, 110, 110} }
 		'green' { ThemeColor{90, 220, 120} }
 		'cyan' { ThemeColor{95, 215, 255} }
-		'selected_bg' { ThemeColor{60, 50, 20} } // dark yellow selection
+		'selected_bg' { ThemeColor{75, 58, 20} } // Scheme B: dark warm amber / espresso
+		'selected_fg' { ThemeColor{255, 235, 150} } // Scheme B: soft warm gold
 		else { ThemeColor{240, 240, 240} }
 	}
 }
@@ -225,6 +229,13 @@ fn theme_color(name string) ThemeColor {
 pub fn apply_color(mut ctx termui.Context, color string) {
 	c := theme_color(color)
 	ctx.set_color(r: c.r, g: c.g, b: c.b)
+}
+
+pub fn apply_selection_style(mut ctx termui.Context) {
+	bg := theme_color('selected_bg')
+	fg := theme_color('selected_fg')
+	ctx.set_color(r: fg.r, g: fg.g, b: fg.b)
+	ctx.set_bg_color(r: bg.r, g: bg.g, b: bg.b)
 }
 
 // === Message styling ===

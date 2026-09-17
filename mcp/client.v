@@ -345,7 +345,7 @@ fn read_response(mut server McpServer, expected_id int, timeout_ms int) !string 
 // --- MCP Protocol ---
 
 fn mcp_initialize(mut server McpServer) bool {
-	params := '{"protocolVersion":"2024-11-05","capabilities":{"roots":{"listChanged":true}},"clientInfo":{"name":"wink-code","version":"0.0.1.5"}}'
+	params := '{"protocolVersion":"2024-11-05","capabilities":{"roots":{"listChanged":true}},"clientInfo":{"name":"wink-code","version":"0.0.2"}}'
 	response := send_request_with_timeout(mut server, 'initialize', params, 60000) or {
 		return false
 	}

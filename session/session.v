@@ -101,6 +101,18 @@ pub fn session_file_path(header SessionHeader) string {
 	return os.join_path(dir, '${ts}_${header.id}.jsonl')
 }
 
+pub fn session_has_messages(path string) bool {
+	content := os.read_file(path) or { return false }
+	lines := content.split('\n')
+	for i := 1; i < lines.len; i++ {
+		line := lines[i].trim_space()
+		if line.len > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 pub fn find_most_recent_session() ?SessionHeader {
 	dir := get_sessions_dir()
 	mut opts := os.WalkParams{}
@@ -111,9 +123,14 @@ pub fn find_most_recent_session() ?SessionHeader {
 	// Sort ascending by filename (timestamp format = chronological order)
 	mut sorted := files.clone()
 	sorted.sort()
-	// Last element is the most recent
-	last := sorted[sorted.len - 1]
-	return parse_session_header(last)
+	// Scan backwards from newest to oldest, returning the first non-empty session
+	for i := sorted.len - 1; i >= 0; i-- {
+		file := sorted[i]
+		if session_has_messages(file) {
+			return parse_session_header(file)
+		}
+	}
+	return none
 }
 
 pub fn find_session_by_id(id string) ?SessionHeader {
@@ -132,6 +149,9 @@ pub fn list_sessions() []SessionHeader {
 	mut headers := []SessionHeader{}
 	mut opts := os.WalkParams{}
 	for file in os.walk_ext(dir, '.jsonl', opts) {
+		if !session_has_messages(file) {
+			continue
+		}
 		if h := parse_session_header(file) {
 			headers << h
 		}

@@ -1,12 +1,14 @@
 module main
 
+#flag windows -Wno-incompatible-pointer-types
+
 import os
 import config
 import tui
 import agent
 import session
 
-const version = '0.0.1.5'
+const version = '0.0.2'
 
 struct CliArgs {
 mut:
@@ -31,6 +33,21 @@ fn parse_cli_args(args []string) CliArgs {
 					eprintln('Error: --resume requires a session ID')
 					exit(1)
 				}
+			}
+			'-v', '--version' {
+				println('winkcode v${version}')
+				exit(0)
+			}
+			'-h', '--help' {
+				println('Wink Code v${version} - AI coding assistant\n')
+				println('Usage:')
+				println('  winkcode [options]\n')
+				println('Options:')
+				println('  -c, --continue       Continue the most recent non-empty conversation session')
+				println('  -r, --resume <id>    Resume a specific conversation session by ID')
+				println('  -v, --version        Show version information')
+				println('  -h, --help           Show this help message')
+				exit(0)
 			}
 			else {
 				i++

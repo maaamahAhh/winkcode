@@ -71,11 +71,53 @@ fn (mut app App) update_tool_call_status(call_id string, duration_str string, st
 	}
 }
 
+// abort_query safely cancels the running model/tool query, finalizes pending tool calls,
+// and resets streaming states.
+pub fn (mut app App) abort_query() {
+	app.ag.client.aborted = true
+	app.is_loading = false
+	app.status = ''
+	app.streaming_tool_name = ''
+	app.streaming_tool_args = ''
+	app.commit_streaming_assistant_message()
+
+	// Finalize any pending tool call messages so spinners stop immediately
+	for i in 0 .. app.messages.len {
+		if app.messages[i].role == 'tool_call' && app.messages[i].tool_status == 'pending' {
+			msg := app.messages[i]
+			call_id := msg.tool_id
+			duration_str := app.take_tool_duration(call_id)
+			dur_suffix := if duration_str.len > 0 { duration_str } else { ' (interrupted)' }
+			app.messages[i] = ChatMessage{
+				role:        msg.role
+				text:        msg.text + dur_suffix
+				time:        msg.time
+				tool_status: 'error'
+				tool_id:     msg.tool_id
+				parent_id:   msg.parent_id
+				tool_name:   msg.tool_name
+				tool_input:  msg.tool_input
+			}
+		}
+	}
+	app.tool_start_times.clear()
+	app.session_dirty = true
+}
+
 pub fn (mut app App) run_query(prompt string) {
+	app.mu.lock()
+	app.first_token_time = 0
+	app.last_tok_per_sec = 0.0
+	app.last_duration_s = 0.0
+	app.mu.unlock()
+
 	cb := agent.AgentCallbacks{
 		on_thinking:    fn [mut app] (text string) {
 			if !app.ag.client.aborted {
 				app.mu.lock()
+				if app.first_token_time == 0 {
+					app.first_token_time = time.ticks()
+				}
 				app.status = 'Thinking...'
 				app.streaming_thinking += text
 				app.mu.unlock()
@@ -84,7 +126,17 @@ pub fn (mut app App) run_query(prompt string) {
 		on_text:        fn [mut app] (text string) {
 			if !app.ag.client.aborted {
 				app.mu.lock()
+				now := time.ticks()
+				if app.first_token_time == 0 {
+					app.first_token_time = now
+				}
+				app.status = 'Generating...'
 				app.streaming_text += text
+				elapsed_s := f32(now - app.first_token_time) / 1000.0
+				if elapsed_s > 0.4 {
+					toks := (app.streaming_text.len + app.streaming_thinking.len) / 4
+					app.last_tok_per_sec = f32(toks) / elapsed_s
+				}
 				app.mu.unlock()
 			}
 		}
@@ -98,7 +150,17 @@ pub fn (mut app App) run_query(prompt string) {
 			app.mu.lock()
 			app.streaming_tool_name = ''
 			app.streaming_tool_args = ''
+			now := time.ticks()
+			if app.first_token_time > 0 {
+				elapsed_s := f32(now - app.first_token_time) / 1000.0
+				if elapsed_s > 0.1 {
+					toks := (app.streaming_text.len + app.streaming_thinking.len) / 4
+					app.last_tok_per_sec = f32(toks) / elapsed_s
+					app.last_duration_s = elapsed_s
+				}
+			}
 			app.commit_streaming_assistant_message()
+			app.first_token_time = 0
 			app.tool_start_times[call_id] = time.now().unix_nano()
 
 			title := if display.len > 0 { display } else { name }
@@ -154,6 +216,15 @@ pub fn (mut app App) run_query(prompt string) {
 		}
 		on_complete:    fn [mut app] () {
 			app.mu.lock()
+			now := time.ticks()
+			if app.first_token_time > 0 {
+				elapsed_s := f32(now - app.first_token_time) / 1000.0
+				if elapsed_s > 0.1 {
+					toks := (app.streaming_text.len + app.streaming_thinking.len) / 4
+					app.last_tok_per_sec = f32(toks) / elapsed_s
+					app.last_duration_s = elapsed_s
+				}
+			}
 			app.commit_streaming_assistant_message()
 			app.status = ''
 			app.is_loading = false

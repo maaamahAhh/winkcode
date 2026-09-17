@@ -8,15 +8,26 @@ const spinner_frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', 
 
 // ASCII logo
 const logo_lines = [
-	' ██╗    ██╗ ██╗ ███╗   ██╗ ██╗  ██╗      ██████╗  ██████╗  ██████╗  ███████╗',
-	' ██║    ██║ ██║ ████╗  ██║ ██║ ██╔╝     ██╔════╝ ██╔═══██╗ ██╔══██╗ ██╔════╝',
-	' ██║ █╗ ██║ ██║ ██╔██╗ ██║ █████╔╝      ██║      ██║   ██║ ██║  ██║ █████╗  ',
-	' ██║███╗██║ ██║ ██║╚██╗██║ ██╔═██╗      ██║      ██║   ██║ ██║  ██║ ██╔══╝  ',
-	' ╚███╔███╔╝ ██║ ██║ ╚████║ ██║  ██╗     ╚██████╗ ╚██████╔╝ ██████╔╝ ███████╗',
-	'  ╚══╝╚══╝  ╚═╝ ╚═╝  ╚═══╝ ╚═╝  ╚═╝      ╚═════╝  ╚═════╝  ╚═════╝  ╚══════╝',
+	'██╗    ██╗ ██╗ ███╗   ██╗ ██╗  ██╗      ██████╗  ██████╗  ██████╗  ███████╗',
+	'██║    ██║ ██║ ████╗  ██║ ██║ ██╔╝     ██╔════╝ ██╔═══██╗ ██╔══██╗ ██╔════╝',
+	'██║ █╗ ██║ ██║ ██╔██╗ ██║ █████╔╝      ██║      ██║   ██║ ██║  ██║ █████╗  ',
+	'██║███╗██║ ██║ ██║╚██╗██║ ██╔═██╗      ██║      ██║   ██║ ██║  ██║ ██╔══╝  ',
+	'╚███╔███╔╝ ██║ ██║ ╚████║ ██║  ██╗     ╚██████╗ ╚██████╔╝ ██████╔╝ ███████╗',
+	' ╚══╝╚══╝  ╚═╝ ╚═╝  ╚═══╝ ╚═╝  ╚═╝      ╚═════╝  ╚═════╝  ╚═════╝  ╚══════╝',
 ]
 
-fn format_tokens_k(tokens int) string {
+pub fn format_tokens_k(tokens int) string {
+	if tokens >= 1_000_000 {
+		m := f32(tokens) / 1_000_000.0
+		if m == f32(int(m)) {
+			return '${int(m)}M'
+		}
+		s := '${m:.2f}'
+		if s.ends_with('0') {
+			return '${s[..s.len - 1]}M'
+		}
+		return '${s}M'
+	}
 	if tokens < 1000 {
 		return '${tokens}'
 	}
@@ -55,28 +66,50 @@ fn get_git_branch(mut app App) string {
 }
 
 // draw_header renders the top logo and minimal product info.
-fn draw_header(mut app App, width int) int {
+fn draw_header(mut app App, width int, height int, bottom_area_height int) int {
 	mut row := 1
 
 	if app.header_mode == .full {
+		logo_h := logo_lines.len
+		total_banner_h := logo_h + 3 // logo (6) + breathing space (1) + info (1) + hints (1)
+		available_h := height - bottom_area_height
+
+		// Center vertically in the empty viewport when space allows
+		if available_h > total_banner_h + 2 {
+			row = (available_h - total_banner_h) / 2
+			if row < 1 {
+				row = 1
+			}
+		}
+
+		logo_w := if logo_lines.len > 0 { visual_width(logo_lines[0]) } else { 0 }
+		logo_x := if width > logo_w { (width - logo_w) / 2 + 1 } else { 1 }
+
 		for logo_line in logo_lines {
-			if row > 20 {
+			if row > height - bottom_area_height {
 				break
 			}
 			apply_color(mut app.ctx, 'accent')
-			app.ctx.draw_text(1, row, truncate_by_width(logo_line, width))
+			app.ctx.draw_text(logo_x, row, truncate_by_width(logo_line, width - logo_x + 1))
 			app.ctx.reset()
 			row++
 		}
+
+		row++ // visual breathing space between logo and info text
+
+		info := 'wink v${app.version} • ${app.ag.get_model()}'
+		info_w := visual_width(info)
+		info_x := if width > info_w { (width - info_w) / 2 + 1 } else { 1 }
 		apply_color(mut app.ctx, 'dim')
-		info := '  wink v${app.version} • ${app.ag.get_model()}'
-		app.ctx.draw_text(1, row, truncate_by_width(info, width))
+		app.ctx.draw_text(info_x, row, truncate_by_width(info, width - info_x + 1))
 		app.ctx.reset()
 		row++
 
+		hint := 'esc to interrupt • ctrl+c to quit • ctrl+l to clear • /help for commands'
+		hint_w := visual_width(hint)
+		hint_x := if width > hint_w { (width - hint_w) / 2 + 1 } else { 1 }
 		apply_color(mut app.ctx, 'dim')
-		app.ctx.draw_text(1, row,
-			'  esc to interrupt • ctrl+c to quit • ctrl+l to clear • /help for commands')
+		app.ctx.draw_text(hint_x, row, truncate_by_width(hint, width - hint_x + 1))
 		app.ctx.reset()
 		row++
 	} else {
@@ -142,6 +175,10 @@ fn draw_footer(mut app App, width int, y int) {
 	effort := app.ag.get_effort()
 	if effort.len > 0 && effort != 'default' {
 		footer_parts << 'effort:${effort}'
+	}
+
+	if app.last_tok_per_sec > 0 {
+		footer_parts << '${app.last_tok_per_sec:.1f} tok/s'
 	}
 
 	footer_parts << get_cwd_short()

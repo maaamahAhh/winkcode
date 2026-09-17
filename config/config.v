@@ -14,6 +14,7 @@ pub:
 	base_url string            @[json: "baseUrl"]
 	headers  map[string]string @[json: "headers"]
 	compat   CompatConfig      @[json: "compat"]
+	api_key  string            @[json: "apiKey"]
 }
 
 pub struct ModelConfig {
@@ -22,6 +23,7 @@ pub:
 	max_tokens     int    @[json: "maxTokens"]
 	context_window int    @[json: "contextWindow"]
 	reasoning      bool   @[json: "reasoning"]
+	effort         string @[json: "effort"]
 }
 
 // AppConfig maps to ~/.winkcode/config.json
@@ -75,42 +77,89 @@ fn builtin_providers() map[string]ProviderConfig {
 
 fn builtin_models() map[string]ModelConfig {
 	return {
+		'claude-opus-5':     ModelConfig{
+			provider:       'anthropic'
+			max_tokens:     64000
+			context_window: 1000000
+			reasoning:      true
+		}
+		'claude-sonnet-5':   ModelConfig{
+			provider:       'anthropic'
+			max_tokens:     128000
+			context_window: 1000000
+			reasoning:      true
+		}
 		'claude-opus-4-8':   ModelConfig{
-			provider:   'anthropic'
-			max_tokens: 16384
-			reasoning:  true
+			provider:       'anthropic'
+			max_tokens:     64000
+			context_window: 1000000
+			reasoning:      true
 		}
 		'claude-opus-4-7':   ModelConfig{
-			provider:   'anthropic'
-			max_tokens: 16384
-			reasoning:  true
+			provider:       'anthropic'
+			max_tokens:     32000
+			context_window: 1000000
+			reasoning:      true
 		}
 		'claude-opus-4-6':   ModelConfig{
-			provider:   'anthropic'
-			max_tokens: 16384
-			reasoning:  true
+			provider:       'anthropic'
+			max_tokens:     32000
+			context_window: 1000000
+			reasoning:      true
 		}
 		'claude-sonnet-4-6': ModelConfig{
-			provider:   'anthropic'
-			max_tokens: 16384
-			reasoning:  true
+			provider:       'anthropic'
+			max_tokens:     32000
+			context_window: 1000000
+			reasoning:      true
 		}
 		'claude-haiku-4-5':  ModelConfig{
-			provider:   'anthropic'
-			max_tokens: 8192
-			reasoning:  true
+			provider:       'anthropic'
+			max_tokens:     64000
+			context_window: 200000
+			reasoning:      true
+		}
+		'gpt-6-astra':       ModelConfig{
+			provider:       'openai'
+			max_tokens:     128000
+			context_window: 1050000
+			reasoning:      true
+		}
+		'gpt-5.6-luna':      ModelConfig{
+			provider:       'openai'
+			max_tokens:     128000
+			context_window: 1050000
+			reasoning:      true
+		}
+		'gpt-5.6-terra':     ModelConfig{
+			provider:       'openai'
+			max_tokens:     128000
+			context_window: 1050000
+			reasoning:      true
+		}
+		'gpt-5.6-sol':       ModelConfig{
+			provider:       'openai'
+			max_tokens:     128000
+			context_window: 1050000
+			reasoning:      true
 		}
 		'gpt-5.5':           ModelConfig{
-			provider:   'openai'
-			max_tokens: 16384
+			provider:       'openai'
+			max_tokens:     128000
+			context_window: 1000000
+			reasoning:      true
 		}
 		'gpt-5.4':           ModelConfig{
-			provider:   'openai'
-			max_tokens: 16384
+			provider:       'openai'
+			max_tokens:     128000
+			context_window: 1000000
+			reasoning:      true
 		}
 		'gpt-5.3':           ModelConfig{
-			provider:   'openai'
-			max_tokens: 8192
+			provider:       'openai'
+			max_tokens:     128000
+			context_window: 1000000
+			reasoning:      true
 		}
 	}
 }
@@ -137,6 +186,12 @@ pub fn load() Config {
 	app_cfg := load_config_file()
 	for k, v in app_cfg.providers {
 		providers[k] = v
+		if v.api_key.len > 0 && k !in auth {
+			resolved_key := resolve_api_key_value(v.api_key)
+			if resolved_key.len > 0 {
+				auth[k] = resolved_key
+			}
+		}
 	}
 	for k, v in app_cfg.models {
 		models[k] = v
@@ -146,6 +201,8 @@ pub fn load() Config {
 	}
 	if app_cfg.effort.len > 0 {
 		effort = app_cfg.effort
+	} else if default_model in models && models[default_model].effort.len > 0 {
+		effort = models[default_model].effort
 	}
 
 	default_model = apply_env_overrides(mut providers, default_model)
@@ -159,6 +216,14 @@ pub fn load() Config {
 	}
 }
 
+fn resolve_api_key_value(val string) string {
+	trimmed := val.trim_space()
+	if trimmed.starts_with('$') && trimmed.len > 1 {
+		return os.getenv(trimmed[1..])
+	}
+	return trimmed
+}
+
 fn load_auth() map[string]string {
 	mut auth := map[string]string{}
 	if os.exists(auth_path()) {
@@ -168,7 +233,10 @@ fn load_auth() map[string]string {
 				map[string]string{}
 			}
 			for k, v in loaded {
-				auth[k] = v
+				resolved_v := resolve_api_key_value(v)
+				if resolved_v.len > 0 {
+					auth[k] = resolved_v
+				}
 			}
 		}
 	}
@@ -253,6 +321,14 @@ pub fn (c &Config) resolve_model(model_name string) !ResolvedConfig {
 	}
 
 	context_win := if model_cfg.context_window > 0 { model_cfg.context_window } else { 256_000 }
+	effort_val := if model_cfg.effort.len > 0 {
+		model_cfg.effort
+	} else if c.effort.len > 0 {
+		c.effort
+	} else {
+		'medium'
+	}
+
 	return ResolvedConfig{
 		api_key:         api_key
 		api_url:         api_url
@@ -260,15 +336,18 @@ pub fn (c &Config) resolve_model(model_name string) !ResolvedConfig {
 		max_tokens:      model_cfg.max_tokens
 		context_window:  context_win
 		api_format:      provider_cfg.api
-		effort:          c.effort
+		effort:          effort_val
 		thinking_format: provider_cfg.compat.thinking_format
 		reasoning:       model_cfg.reasoning
 	}
 }
 
 pub fn (mut c Config) set_model(name string) ! {
-	_ = c.models[name] or { return error('unknown model: ${name}') }
+	model_cfg := c.models[name] or { return error('unknown model: ${name}') }
 	c.current_model = name
+	if model_cfg.effort.len > 0 {
+		c.effort = model_cfg.effort
+	}
 }
 
 pub fn (mut c Config) set_effort(level string) ! {

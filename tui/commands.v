@@ -9,8 +9,10 @@ pub fn (mut app App) submit_input() {
 	if app.is_loading {
 		return
 	}
+	app.mu.lock()
 	prompt := app.input.string().trim_space()
 	if prompt.len == 0 {
+		app.mu.unlock()
 		return
 	}
 	app.input_history << prompt
@@ -18,6 +20,7 @@ pub fn (mut app App) submit_input() {
 	app.input = []rune{}
 	app.cursor_pos = 0
 	app.ac_visible = false
+	app.mu.unlock()
 
 	if prompt.starts_with('/') {
 		app.handle_command(prompt)
@@ -25,11 +28,16 @@ pub fn (mut app App) submit_input() {
 	}
 
 	app.push_message('user', prompt)
+
+	app.mu.lock()
 	app.streaming_text = ''
+	app.streaming_thinking = ''
 	app.status = 'Waiting for model...'
 	app.is_loading = true
 	app.loading_start = time.ticks()
 	app.scroll_offset = 0
+	app.mu.unlock()
+
 	go app.run_query(prompt)
 }
 
@@ -207,4 +215,3 @@ fn (mut app App) cmd_mcp(parts []string) {
 		app.open_mcp_selector()
 	}
 }
-
