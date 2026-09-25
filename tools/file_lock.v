@@ -2,6 +2,12 @@ module tools
 
 import sync
 
+// init_file_lock pre-allocates the file mutation mutex during single-threaded startup,
+// ensuring zero data race when background tool worker threads call lock_file_mutation().
+pub fn init_file_lock() {
+	get_file_mutation_lock()
+}
+
 fn get_file_mutation_lock() &sync.Mutex {
 	unsafe {
 		mut static mu := &sync.Mutex(nil)

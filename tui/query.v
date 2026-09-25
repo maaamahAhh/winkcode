@@ -104,6 +104,174 @@ pub fn (mut app App) abort_query() {
 	app.session_dirty = true
 }
 
+fn (mut app App) update_stream_speed(now i64) {
+	if app.first_token_time == 0 {
+		app.first_token_time = now
+		return
+	}
+	elapsed_s := f32(now - app.first_token_time) / 1000.0
+	if elapsed_s > 0.2 {
+		total_chars := app.streaming_thinking.len + app.streaming_text.len + app.streaming_tool_args.len
+		toks := total_chars / 4
+		app.last_tok_per_sec = f32(toks) / elapsed_s
+	}
+}
+
+fn app_cb_thinking(user_data voidptr, text string) {
+	mut app := unsafe { &App(user_data) }
+	app.mu.lock()
+	defer {
+		app.mu.unlock()
+	}
+	if app.ag.client.aborted {
+		return
+	}
+	app.status = 'Thinking...'
+	app.streaming_thinking += text
+	app.update_stream_speed(time.ticks())
+}
+
+fn app_cb_text(user_data voidptr, text string) {
+	mut app := unsafe { &App(user_data) }
+	app.mu.lock()
+	defer {
+		app.mu.unlock()
+	}
+	if app.ag.client.aborted {
+		return
+	}
+	app.status = 'Generating...'
+	app.streaming_text += text
+	app.update_stream_speed(time.ticks())
+}
+
+fn app_cb_tool_stream(user_data voidptr, name string, args string) {
+	mut app := unsafe { &App(user_data) }
+	app.mu.lock()
+	defer {
+		app.mu.unlock()
+	}
+	if app.ag.client.aborted {
+		return
+	}
+	app.streaming_tool_name = name
+	app.streaming_tool_args = args
+	app.update_stream_speed(time.ticks())
+}
+
+fn app_cb_tool_call(user_data voidptr, call_id string, name string, input string, display string, parent_id string) {
+	mut app := unsafe { &App(user_data) }
+	app.mu.lock()
+	app.streaming_tool_name = ''
+	app.streaming_tool_args = ''
+	now := time.ticks()
+	if app.first_token_time > 0 {
+		elapsed_s := f32(now - app.first_token_time) / 1000.0
+		if elapsed_s > 0.1 {
+			total_chars := app.streaming_thinking.len + app.streaming_text.len + input.len
+			toks := total_chars / 4
+			app.last_tok_per_sec = f32(toks) / elapsed_s
+			app.last_duration_s = elapsed_s
+		}
+	}
+	app.commit_streaming_assistant_message()
+	app.first_token_time = 0
+	app.tool_start_times[call_id] = time.now().unix_nano()
+
+	title := if display.len > 0 { display } else { name }
+
+	app.messages << ChatMessage{
+		role:        'tool_call'
+		text:        title
+		time:        now_formatted()
+		tool_status: 'pending'
+		tool_id:     call_id
+		parent_id:   parent_id
+		tool_name:   name
+		tool_input:  input
+	}
+	if app.header_mode == .full {
+		app.header_mode = .compact
+	}
+	if app.tool_start_times.len > 1 {
+		app.status = 'running tools (${app.tool_start_times.len} active)...'
+	} else {
+		app.status = 'running ${title}...'
+	}
+	app.mu.unlock()
+}
+
+fn app_cb_tool_result(user_data voidptr, call_id string, _name string, preview string, is_error bool, parent_id string) {
+	mut app := unsafe { &App(user_data) }
+	app.mu.lock()
+	status := if is_error { 'error' } else { 'success' }
+	duration_str := app.take_tool_duration(call_id)
+	app.update_tool_call_status(call_id, duration_str, status)
+
+	if preview.len > 0 {
+		result_role := if is_error { 'tool_error' } else { 'tool_result' }
+		app.messages << ChatMessage{
+			role:      result_role
+			text:      preview
+			time:      now_formatted()
+			tool_id:   call_id
+			parent_id: parent_id
+		}
+	}
+	if app.tool_start_times.len > 0 {
+		app.status = 'running tools (${app.tool_start_times.len} active)...'
+	} else {
+		app.status = 'Waiting for model...'
+	}
+	app.session_dirty = true
+	app.mu.unlock()
+}
+
+fn app_cb_retry(user_data voidptr, attempt int, max_attempts int, delay_s int, _err_msg string) {
+	mut app := unsafe { &App(user_data) }
+	app.mu.lock()
+	app.status = 'API error. Retrying (${attempt}/${max_attempts}) in ${delay_s}s...'
+	app.mu.unlock()
+}
+
+fn app_cb_complete(user_data voidptr) {
+	mut app := unsafe { &App(user_data) }
+	app.mu.lock()
+	now := time.ticks()
+	if app.first_token_time > 0 {
+		elapsed_s := f32(now - app.first_token_time) / 1000.0
+		if elapsed_s > 0.1 {
+			total_chars := app.streaming_thinking.len + app.streaming_text.len + app.streaming_tool_args.len
+			toks := total_chars / 4
+			app.last_tok_per_sec = f32(toks) / elapsed_s
+			app.last_duration_s = elapsed_s
+		}
+	}
+	app.commit_streaming_assistant_message()
+	app.first_token_time = 0
+	app.status = ''
+	app.is_loading = false
+	app.session_dirty = true
+	app.mu.unlock()
+	app.flush_session()
+}
+
+fn app_cb_error(user_data voidptr, msg string) {
+	mut app := unsafe { &App(user_data) }
+	app.mu.lock()
+	app.commit_streaming_assistant_message()
+	app.messages << ChatMessage{
+		role: 'error'
+		text: msg
+		time: now_formatted()
+	}
+	app.status = ''
+	app.is_loading = false
+	app.session_dirty = true
+	app.mu.unlock()
+	app.flush_session()
+}
+
 pub fn (mut app App) run_query(prompt string) {
 	app.mu.lock()
 	app.first_token_time = 0
@@ -112,140 +280,15 @@ pub fn (mut app App) run_query(prompt string) {
 	app.mu.unlock()
 
 	cb := agent.AgentCallbacks{
-		on_thinking:    fn [mut app] (text string) {
-			if !app.ag.client.aborted {
-				app.mu.lock()
-				if app.first_token_time == 0 {
-					app.first_token_time = time.ticks()
-				}
-				app.status = 'Thinking...'
-				app.streaming_thinking += text
-				app.mu.unlock()
-			}
-		}
-		on_text:        fn [mut app] (text string) {
-			if !app.ag.client.aborted {
-				app.mu.lock()
-				now := time.ticks()
-				if app.first_token_time == 0 {
-					app.first_token_time = now
-				}
-				app.status = 'Generating...'
-				app.streaming_text += text
-				elapsed_s := f32(now - app.first_token_time) / 1000.0
-				if elapsed_s > 0.4 {
-					toks := (app.streaming_text.len + app.streaming_thinking.len) / 4
-					app.last_tok_per_sec = f32(toks) / elapsed_s
-				}
-				app.mu.unlock()
-			}
-		}
-		on_tool_stream: fn [mut app] (name string, args string) {
-			app.mu.lock()
-			app.streaming_tool_name = name
-			app.streaming_tool_args = args
-			app.mu.unlock()
-		}
-		on_tool_call:   fn [mut app] (call_id string, name string, input string, display string, parent_id string) {
-			app.mu.lock()
-			app.streaming_tool_name = ''
-			app.streaming_tool_args = ''
-			now := time.ticks()
-			if app.first_token_time > 0 {
-				elapsed_s := f32(now - app.first_token_time) / 1000.0
-				if elapsed_s > 0.1 {
-					toks := (app.streaming_text.len + app.streaming_thinking.len) / 4
-					app.last_tok_per_sec = f32(toks) / elapsed_s
-					app.last_duration_s = elapsed_s
-				}
-			}
-			app.commit_streaming_assistant_message()
-			app.first_token_time = 0
-			app.tool_start_times[call_id] = time.now().unix_nano()
-
-			title := if display.len > 0 { display } else { name }
-
-			app.messages << ChatMessage{
-				role:        'tool_call'
-				text:        title
-				time:        now_formatted()
-				tool_status: 'pending'
-				tool_id:     call_id
-				parent_id:   parent_id
-				tool_name:   name
-				tool_input:  input
-			}
-			if app.header_mode == .full {
-				app.header_mode = .compact
-			}
-			if app.tool_start_times.len > 1 {
-				app.status = 'running tools (${app.tool_start_times.len} active)...'
-			} else {
-				app.status = 'running ${title}...'
-			}
-			app.mu.unlock()
-		}
-		on_tool_result: fn [mut app] (call_id string, name string, preview string, is_error bool, parent_id string) {
-			app.mu.lock()
-			status := if is_error { 'error' } else { 'success' }
-			duration_str := app.take_tool_duration(call_id)
-			app.update_tool_call_status(call_id, duration_str, status)
-
-			if preview.len > 0 {
-				result_role := if is_error { 'tool_error' } else { 'tool_result' }
-				app.messages << ChatMessage{
-					role:      result_role
-					text:      preview
-					time:      now_formatted()
-					tool_id:   call_id
-					parent_id: parent_id
-				}
-			}
-			if app.tool_start_times.len > 0 {
-				app.status = 'running tools (${app.tool_start_times.len} active)...'
-			} else {
-				app.status = 'Waiting for model...'
-			}
-			app.session_dirty = true
-			app.mu.unlock()
-		}
-		on_retry:       fn [mut app] (attempt int, max_attempts int, delay_s int, _err_msg string) {
-			app.mu.lock()
-			app.status = 'API error. Retrying (${attempt}/${max_attempts}) in ${delay_s}s...'
-			app.mu.unlock()
-		}
-		on_complete:    fn [mut app] () {
-			app.mu.lock()
-			now := time.ticks()
-			if app.first_token_time > 0 {
-				elapsed_s := f32(now - app.first_token_time) / 1000.0
-				if elapsed_s > 0.1 {
-					toks := (app.streaming_text.len + app.streaming_thinking.len) / 4
-					app.last_tok_per_sec = f32(toks) / elapsed_s
-					app.last_duration_s = elapsed_s
-				}
-			}
-			app.commit_streaming_assistant_message()
-			app.status = ''
-			app.is_loading = false
-			app.session_dirty = true
-			app.mu.unlock()
-			app.flush_session()
-		}
-		on_error:       fn [mut app] (msg string) {
-			app.mu.lock()
-			app.commit_streaming_assistant_message()
-			app.messages << ChatMessage{
-				role: 'error'
-				text: msg
-				time: now_formatted()
-			}
-			app.status = ''
-			app.is_loading = false
-			app.session_dirty = true
-			app.mu.unlock()
-			app.flush_session()
-		}
+		user_data:      voidptr(app)
+		on_thinking:    app_cb_thinking
+		on_text:        app_cb_text
+		on_tool_stream: app_cb_tool_stream
+		on_tool_call:   app_cb_tool_call
+		on_tool_result: app_cb_tool_result
+		on_retry:       app_cb_retry
+		on_complete:    app_cb_complete
+		on_error:       app_cb_error
 	}
 	app.ag.run(prompt, cb)
 }

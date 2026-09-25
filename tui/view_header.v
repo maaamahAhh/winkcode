@@ -193,6 +193,33 @@ fn draw_footer(mut app App, width int, y int) {
 
 	apply_color(mut app.ctx, color)
 	footer_text := footer_parts.join(' • ')
+
+	now_ticks := time.ticks()
+	is_armed := app.ctrl_c_armed && (now_ticks - app.last_ctrl_c_time < 2000)
+	if !is_armed {
+		app.ctrl_c_armed = false
+	}
+
+	if is_armed {
+		hint := 'Press Ctrl+C again to exit'
+		hint_w := visual_width(hint)
+		if width > hint_w + 10 {
+			left_avail := width - hint_w - 2
+			app.ctx.draw_text(1, y, truncate_by_width(footer_text, left_avail))
+			app.ctx.reset()
+			apply_color(mut app.ctx, 'yellow')
+			app.ctx.draw_text(width - hint_w, y, hint)
+			app.ctx.reset()
+			return
+		} else {
+			app.ctx.reset()
+			apply_color(mut app.ctx, 'yellow')
+			app.ctx.draw_text(1, y, truncate_by_width(hint, width))
+			app.ctx.reset()
+			return
+		}
+	}
+
 	app.ctx.draw_text(1, y, truncate_by_width(footer_text, width))
 	app.ctx.reset()
 }

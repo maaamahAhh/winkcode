@@ -13,25 +13,27 @@ import sync
 
 pub struct AgentCallbacks {
 pub:
-	on_text        fn (string)                               = unsafe { nil } // streaming text callback
-	on_thinking    fn (string)                               = unsafe { nil } // streaming thinking callback
-	on_tool_call   fn (string, string, string, string, string)       = unsafe { nil } // call_id, name, input, display_title, parent_id
-	on_tool_stream fn (string, string)                       = unsafe { nil } // tool name, streaming arguments
-	on_tool_result fn (string, string, string, bool, string) = unsafe { nil } // call_id, name, result preview, is_error, parent_id
-	on_retry       fn (int, int, int, string)                = unsafe { nil } // attempt, max_attempts, delay_s, err_msg
-	on_complete    fn ()                                     = unsafe { nil } // agent turn complete
-	on_error       fn (string)                               = unsafe { nil } // error message
+	user_data      voidptr                                              = unsafe { nil }
+	on_text        fn (voidptr, string)                                 = unsafe { nil } // streaming text callback
+	on_thinking    fn (voidptr, string)                                 = unsafe { nil } // streaming thinking callback
+	on_tool_call   fn (voidptr, string, string, string, string, string) = unsafe { nil } // call_id, name, input, display_title, parent_id
+	on_tool_stream fn (voidptr, string, string)                         = unsafe { nil } // tool name, streaming arguments
+	on_tool_result fn (voidptr, string, string, string, bool, string)   = unsafe { nil } // call_id, name, result preview, is_error, parent_id
+	on_retry       fn (voidptr, int, int, int, string)                  = unsafe { nil } // attempt, max_attempts, delay_s, err_msg
+	on_complete    fn (voidptr)                                         = unsafe { nil } // agent turn complete
+	on_error       fn (voidptr, string)                                 = unsafe { nil } // error message
 }
 
 pub struct Agent {
 pub mut:
-	config      config.Config
-	client      llm.Client
-	max_turns   int = 100
-	mcp_manager &mcp.McpManager = unsafe { nil }
-	aborted     bool
-	is_subagent bool
-	read_only   bool
+	config        config.Config
+	client        llm.Client
+	max_turns     int = 100
+	mcp_manager   &mcp.McpManager = unsafe { nil }
+	aborted       bool
+	is_subagent   bool
+	read_only     bool
+	cached_tokens int
 }
 
 fn build_system_prompt() string {
@@ -120,11 +122,13 @@ pub fn new_agent(cfg config.Config) !Agent {
 		manager.add_server(mcp_cfg.name, mcp_cfg.command, mcp_cfg.args, mcp_cfg.env)
 	}
 
-	return Agent{
+	mut ag := Agent{
 		config:      cfg
 		client:      client
 		mcp_manager: manager
 	}
+	ag.update_cached_tokens()
+	return ag
 }
 
 pub fn (a &Agent) get_model() string {
@@ -136,7 +140,11 @@ pub fn (a &Agent) get_effort() string {
 }
 
 pub fn (a &Agent) get_context_tokens() int {
-	return compact.estimate_tokens(a.client.messages)
+	return a.cached_tokens
+}
+
+pub fn (mut a Agent) update_cached_tokens() {
+	a.cached_tokens = compact.estimate_tokens(a.client.messages)
 }
 
 pub fn (a &Agent) get_context_window() int {
@@ -173,6 +181,7 @@ pub fn (mut a Agent) set_effort(level string) ! {
 
 pub fn (mut a Agent) clear_conversation() {
 	a.client.clear_messages()
+	a.cached_tokens = 0
 }
 
 fn is_retryable_api_error(err_str string) bool {
@@ -316,7 +325,7 @@ fn (mut a Agent) stream_with_retry(prompt string, cb AgentCallbacks) ?llm.Stream
 	max_retries := 3
 
 	for {
-		result := a.client.chat_stream(current_prompt, cb.on_text, unsafe { nil },
+		result := a.client.chat_stream(current_prompt, cb.user_data, cb.on_text, unsafe { nil },
 			cb.on_thinking, cb.on_tool_stream) or {
 			if a.client.aborted {
 				return none
@@ -324,7 +333,7 @@ fn (mut a Agent) stream_with_retry(prompt string, cb AgentCallbacks) ?llm.Stream
 			if is_retryable_api_error(err.str()) && attempt < max_retries {
 				delay_s := attempt * 2
 				if cb.on_retry != unsafe { nil } {
-					cb.on_retry(attempt, max_retries, delay_s, err.str())
+					cb.on_retry(cb.user_data, attempt, max_retries, delay_s, err.str())
 				}
 				for _ in 0 .. (delay_s * 10) {
 					if a.client.aborted {
@@ -337,7 +346,7 @@ fn (mut a Agent) stream_with_retry(prompt string, cb AgentCallbacks) ?llm.Stream
 				continue
 			}
 			if cb.on_error != unsafe { nil } {
-				cb.on_error(err.str())
+				cb.on_error(cb.user_data, err.str())
 			}
 			return none
 		}
@@ -433,7 +442,7 @@ fn (a &Agent) dispatch_single_tool(call_id string, tc llm.ToolCall, args map[str
 fn (a &Agent) execute_tool_worker(call_id string, tc llm.ToolCall, args map[string]string, cb AgentCallbacks, parent_id string) ToolExecutionResult {
 	tool_result, preview := a.dispatch_single_tool(call_id, tc, args, cb, parent_id)
 	if cb.on_tool_result != unsafe { nil } {
-		cb.on_tool_result(call_id, tc.name, preview, tool_result.is_error, parent_id)
+		cb.on_tool_result(cb.user_data, call_id, tc.name, preview, tool_result.is_error, parent_id)
 	}
 	return ToolExecutionResult{
 		id:      call_id
@@ -453,21 +462,24 @@ pub fn (mut a Agent) run(prompt string, cb AgentCallbacks) {
 	for turn := 0; turn < a.max_turns; turn++ {
 		if compact.should_compact(&a.client) {
 			compact.compact(mut a.client, '') or {}
+			a.update_cached_tokens()
 		}
 
 		result := a.stream_with_retry(current_prompt, cb) or { return }
+		a.update_cached_tokens()
 
 		if a.client.aborted {
 			a.client.add_user_message('[Request interrupted by user]')
+			a.update_cached_tokens()
 			if cb.on_complete != unsafe { nil } {
-				cb.on_complete()
+				cb.on_complete(cb.user_data)
 			}
 			return
 		}
 
 		if result.tool_calls.len == 0 {
 			if cb.on_complete != unsafe { nil } {
-				cb.on_complete()
+				cb.on_complete(cb.user_data)
 			}
 			return
 		}
@@ -479,12 +491,12 @@ pub fn (mut a Agent) run(prompt string, cb AgentCallbacks) {
 			args := parse_tool_input(tc.input)
 			display_title := format_tool_display_title(tc.name, args)
 			if cb.on_tool_call != unsafe { nil } {
-				cb.on_tool_call(call_id, tc.name, tc.input, display_title, '')
+				cb.on_tool_call(cb.user_data, call_id, tc.name, tc.input, display_title, '')
 			}
 
 			tool_result, preview := a.dispatch_single_tool(call_id, tc, args, cb, '')
 			if cb.on_tool_result != unsafe { nil } {
-				cb.on_tool_result(call_id, tc.name, preview, tool_result.is_error, '')
+				cb.on_tool_result(cb.user_data, call_id, tc.name, preview, tool_result.is_error, '')
 			}
 			tool_results[call_id] = tool_result
 		} else {
@@ -494,7 +506,7 @@ pub fn (mut a Agent) run(prompt string, cb AgentCallbacks) {
 				args := parse_tool_input(tc.input)
 				display_title := format_tool_display_title(tc.name, args)
 				if cb.on_tool_call != unsafe { nil } {
-					cb.on_tool_call(call_id, tc.name, tc.input, display_title, '')
+					cb.on_tool_call(cb.user_data, call_id, tc.name, tc.input, display_title, '')
 				}
 				prepared_calls << PreparedToolCall{
 					call_id:       call_id
@@ -516,11 +528,12 @@ pub fn (mut a Agent) run(prompt string, cb AgentCallbacks) {
 		}
 
 		a.client.add_tool_results(tool_results)
+		a.update_cached_tokens()
 		current_prompt = ''
 	}
 
 	if cb.on_error != unsafe { nil } {
-		cb.on_error('max turns reached (${a.max_turns})')
+		cb.on_error(cb.user_data, 'max turns reached (${a.max_turns})')
 	}
 }
 

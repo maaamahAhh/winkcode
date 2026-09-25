@@ -228,8 +228,8 @@ pub fn compact(mut a llm.Client, custom_instructions string) !string {
 		return error('context too small to compact (need at least 2 conversational turns)')
 	}
 
-	mut old_msgs := a.messages[..cut_point]
-	mut kept_msgs := a.messages[cut_point..]
+	old_msgs := a.messages[..cut_point].clone()
+	kept_msgs := a.messages[cut_point..].clone()
 
 	if old_msgs.len == 0 {
 		return error('nothing to compact')
@@ -257,8 +257,8 @@ pub fn compact(mut a llm.Client, custom_instructions string) !string {
 	comp_client.tool_schemas = '[]'
 	comp_client.system_prompt = summarization_system_prompt
 
-	result := comp_client.chat_stream(prompt_sb.str(), fn (_ string) {}, fn (_ llm.ToolCall) {},
-		fn (_ string) {}, fn (_ string, _ string) {}) or {
+	result := comp_client.chat_stream(prompt_sb.str(), unsafe { nil }, unsafe { nil },
+		unsafe { nil }, unsafe { nil }, unsafe { nil }) or {
 		return error('compaction API call failed: ${err}')
 	}
 

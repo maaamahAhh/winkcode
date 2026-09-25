@@ -173,6 +173,9 @@ fn wrap_segments(segments []RenderLine, width int, max_lines int) []RenderLine {
 
 // build_seg_line groups runes by color into segments.
 fn build_seg_line(runes []rune, colors []string) RenderLine {
+	if runes.len == 0 {
+		return RenderLine{}
+	}
 	mut segs := []RenderLine{}
 	mut seg_start := 0
 	for i := 1; i <= runes.len; i++ {
@@ -190,7 +193,7 @@ fn build_seg_line(runes []rune, colors []string) RenderLine {
 	}
 	return RenderLine{
 		text:  text
-		color: segs[0].color
+		color: if segs.len > 0 { segs[0].color } else { 'white' }
 		segs:  segs
 	}
 }

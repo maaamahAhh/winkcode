@@ -112,10 +112,9 @@ pub fn on_frame(x voidptr) {
 }
 
 fn draw_chat_line(mut app App, line RenderLine, row int, doc_idx int, chat_width int, norm ?NormalizedSelection) {
-	col_range := if ns := norm {
-		ns.col_range_for_line(doc_idx, chat_width)
-	} else {
-		none
+	mut col_range := ?ColRange(none)
+	if ns := norm {
+		col_range = ns.col_range_for_line(doc_idx, chat_width)
 	}
 
 	if col_range == none {

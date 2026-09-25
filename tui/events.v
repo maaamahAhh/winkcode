@@ -87,6 +87,51 @@ pub fn handle_normal_event(mut app App, e &termui.Event) {
 
 	is_ctrl := e.modifiers.has(.ctrl) || e.modifiers == .ctrl
 	is_ctrl_o := (is_ctrl && e.code == .o) || e.utf8 == '\x0f'
+	is_ctrl_c := (is_ctrl && e.code == .c) || e.utf8 == '\x03'
+
+	// Any key other than Ctrl+C resets the exit armed state
+	if !is_ctrl_c && app.ctrl_c_armed {
+		app.ctrl_c_armed = false
+	}
+
+	if is_ctrl_c {
+		app.mu.lock()
+		if app.selection.has_sel {
+			app.copy_selection()
+			app.selection.clear()
+			app.ctrl_c_armed = false
+			app.mu.unlock()
+			return
+		}
+		if app.is_loading {
+			app.abort_query()
+			app.ctrl_c_armed = false
+			app.mu.unlock()
+			return
+		}
+		app.mu.unlock()
+
+		// If input has text, Ctrl+C only clears the input box
+		// Does not trigger exit hint or count towards exit
+		if app.input.len > 0 {
+			app.input = []rune{}
+			app.cursor_pos = 0
+			app.update_autocomplete()
+			app.ctrl_c_armed = false
+			return
+		}
+
+		// If input is empty:
+		now_ticks := time.ticks()
+		if app.ctrl_c_armed && (now_ticks - app.last_ctrl_c_time < 2000) {
+			app.save_session()
+			exit(0)
+		} else {
+			app.ctrl_c_armed = true
+			app.last_ctrl_c_time = now_ticks
+			return
+		}
+	}
 
 	// Ctrl combinations
 	if is_ctrl || is_ctrl_o {
@@ -156,31 +201,13 @@ pub fn handle_normal_event(mut app App, e &termui.Event) {
 			}
 		}
 		.c {
-			if is_ctrl {
-				app.mu.lock()
-				if app.selection.has_sel {
-					app.copy_selection()
-					app.selection.clear()
-					app.mu.unlock()
-					return
-				}
-				if app.is_loading {
-					app.abort_query()
-					app.mu.unlock()
-					return
-				}
-				app.mu.unlock()
-				app.save_session()
-				exit(0)
-			} else {
-				if e.utf8.len > 0 {
-					for r in e.utf8.runes() {
-						if r >= 32 {
-							app.insert_rune_at_cursor(r)
-						}
+			if e.utf8.len > 0 {
+				for r in e.utf8.runes() {
+					if r >= 32 {
+						app.insert_rune_at_cursor(r)
 					}
-					app.update_autocomplete()
 				}
+				app.update_autocomplete()
 			}
 		}
 		.enter {

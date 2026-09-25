@@ -21,7 +21,7 @@ struct AnthropicEventDelta {
 	text         string
 }
 
-fn handle_block_start(mut state StreamState, json_str string, on_tool_stream OnToolStream) {
+fn handle_block_start(mut state StreamState, json_str string, user_data voidptr, on_tool_stream OnToolStream) {
 	event := json2.decode[AnthropicEvent](json_str) or { return }
 	cb := event.content_block or {
 		state.current_block_type = 'text'
@@ -35,7 +35,7 @@ fn handle_block_start(mut state StreamState, json_str string, on_tool_stream OnT
 			state.pending_tool_name = cb.name
 			state.pending_tool_input = ''
 			if on_tool_stream != unsafe { nil } {
-				on_tool_stream(state.pending_tool_name, state.pending_tool_input)
+				on_tool_stream(user_data, state.pending_tool_name, state.pending_tool_input)
 			}
 		}
 		'thinking' {
@@ -47,7 +47,7 @@ fn handle_block_start(mut state StreamState, json_str string, on_tool_stream OnT
 	}
 }
 
-fn handle_block_delta(mut state StreamState, json_str string, on_text OnStreamText, on_thinking OnStreamText, on_tool_stream OnToolStream) {
+fn handle_block_delta(mut state StreamState, json_str string, user_data voidptr, on_text OnStreamText, on_thinking OnStreamText, on_tool_stream OnToolStream) {
 	event := json2.decode[AnthropicEvent](json_str) or { return }
 	d := event.delta or { return }
 	delta_type := if d.typ.len > 0 { d.typ } else { state.current_block_type }
@@ -57,7 +57,7 @@ fn handle_block_delta(mut state StreamState, json_str string, on_text OnStreamTe
 			if d.partial_json.len > 0 {
 				state.pending_tool_input += d.partial_json
 				if on_tool_stream != unsafe { nil } {
-					on_tool_stream(state.pending_tool_name, state.pending_tool_input)
+					on_tool_stream(user_data, state.pending_tool_name, state.pending_tool_input)
 				}
 			}
 		}
@@ -65,7 +65,7 @@ fn handle_block_delta(mut state StreamState, json_str string, on_text OnStreamTe
 			if d.thinking.len > 0 {
 				state.thinking += d.thinking
 				if on_thinking != unsafe { nil } {
-					on_thinking(d.thinking)
+					on_thinking(user_data, d.thinking)
 				}
 			}
 		}
@@ -73,7 +73,7 @@ fn handle_block_delta(mut state StreamState, json_str string, on_text OnStreamTe
 			if d.text.len > 0 {
 				state.full_text += d.text
 				if on_text != unsafe { nil } {
-					on_text(d.text)
+					on_text(user_data, d.text)
 				}
 			}
 		}
@@ -81,14 +81,14 @@ fn handle_block_delta(mut state StreamState, json_str string, on_text OnStreamTe
 			if d.text.len > 0 {
 				state.full_text += d.text
 				if on_text != unsafe { nil } {
-					on_text(d.text)
+					on_text(user_data, d.text)
 				}
 			}
 		}
 	}
 }
 
-fn handle_block_stop(mut state StreamState, on_tool_call OnToolCall) {
+fn handle_block_stop(mut state StreamState, user_data voidptr, on_tool_call OnToolCall) {
 	if state.current_block_type == 'tool_use' && state.pending_tool_id.len > 0 {
 		tc := ToolCall{
 			id:    state.pending_tool_id
@@ -97,7 +97,7 @@ fn handle_block_stop(mut state StreamState, on_tool_call OnToolCall) {
 		}
 		state.tool_calls << tc
 		if on_tool_call != unsafe { nil } {
-			on_tool_call(tc)
+			on_tool_call(user_data, tc)
 		}
 		state.pending_tool_id = ''
 		state.pending_tool_name = ''
@@ -106,7 +106,7 @@ fn handle_block_stop(mut state StreamState, on_tool_call OnToolCall) {
 	state.current_block_type = ''
 }
 
-fn process_anthropic_line(mut state StreamState, line string, on_text OnStreamText, on_tool_call OnToolCall, on_thinking OnStreamText, on_tool_stream OnToolStream) {
+fn process_anthropic_line(mut state StreamState, line string, user_data voidptr, on_text OnStreamText, on_tool_call OnToolCall, on_thinking OnStreamText, on_tool_stream OnToolStream) {
 	if line.starts_with('event:') {
 		state.current_event = line[6..].trim_space()
 		return
@@ -129,13 +129,13 @@ fn process_anthropic_line(mut state StreamState, line string, on_text OnStreamTe
 
 	match event_type {
 		'content_block_start' {
-			handle_block_start(mut state, json_str, on_tool_stream)
+			handle_block_start(mut state, json_str, user_data, on_tool_stream)
 		}
 		'content_block_delta' {
-			handle_block_delta(mut state, json_str, on_text, on_thinking, on_tool_stream)
+			handle_block_delta(mut state, json_str, user_data, on_text, on_thinking, on_tool_stream)
 		}
 		'content_block_stop' {
-			handle_block_stop(mut state, on_tool_call)
+			handle_block_stop(mut state, user_data, on_tool_call)
 		}
 		else {}
 	}

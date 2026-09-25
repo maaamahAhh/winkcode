@@ -31,7 +31,7 @@ mut:
 	generation         int               // request generation, to ignore stale chunks
 }
 
-fn process_stream_chunk(mut request http.Request, mut state StreamState, chunk []u8, body_so_far u64, _body_expected u64, status_code int, my_gen int, mut c Client, on_text OnStreamText, on_tool_call OnToolCall, on_thinking OnStreamText, on_tool_stream OnToolStream) {
+fn process_stream_chunk(mut request http.Request, mut state StreamState, chunk []u8, body_so_far u64, _body_expected u64, status_code int, my_gen int, mut c Client, user_data voidptr, on_text OnStreamText, on_tool_call OnToolCall, on_thinking OnStreamText, on_tool_stream OnToolStream) {
 	if status_code != 200 {
 		return
 	}
@@ -52,27 +52,27 @@ fn process_stream_chunk(mut request http.Request, mut state StreamState, chunk [
 		state.buffer += chunk_str
 		state.raw_body += chunk_str
 	}
-	process_buffered_lines(mut state, on_text, on_tool_call, on_thinking, on_tool_stream)
+	process_buffered_lines(mut state, user_data, on_text, on_tool_call, on_thinking, on_tool_stream)
 }
 
-fn process_buffered_lines(mut state StreamState, on_text OnStreamText, on_tool_call OnToolCall, on_thinking OnStreamText, on_tool_stream OnToolStream) {
+fn process_buffered_lines(mut state StreamState, user_data voidptr, on_text OnStreamText, on_tool_call OnToolCall, on_thinking OnStreamText, on_tool_stream OnToolStream) {
 	for state.buffer.contains('\n') {
 		nl_idx := state.buffer.index('\n') or { break }
 		line := state.buffer[..nl_idx].trim_space()
 		state.buffer = state.buffer[nl_idx + 1..]
 
 		if state.api_format == 'anthropic' {
-			process_anthropic_line(mut state, line, on_text, on_tool_call, on_thinking,
+			process_anthropic_line(mut state, line, user_data, on_text, on_tool_call, on_thinking,
 				on_tool_stream)
 		} else {
-			process_openai_line(mut state, line, on_text, on_tool_call, on_thinking, on_tool_stream)
+			process_openai_line(mut state, line, user_data, on_text, on_tool_call, on_thinking, on_tool_stream)
 		}
 	}
 }
 
 // parse_sse_full parses a complete SSE response body.
 // Used when on_progress_body is not invoked (e.g. Windows vschannel SSL backend).
-fn parse_sse_full(mut state StreamState, sse_body string, on_text OnStreamText, on_tool_call OnToolCall, on_thinking OnStreamText, on_tool_stream OnToolStream, my_gen int) {
+fn parse_sse_full(mut state StreamState, sse_body string, user_data voidptr, on_text OnStreamText, on_tool_call OnToolCall, on_thinking OnStreamText, on_tool_stream OnToolStream, my_gen int) {
 	if my_gen != state.generation {
 		return
 	}
@@ -84,10 +84,10 @@ fn parse_sse_full(mut state StreamState, sse_body string, on_text OnStreamText, 
 			continue
 		}
 		if state.api_format == 'anthropic' {
-			process_anthropic_line(mut state, trimmed, on_text, on_tool_call, on_thinking,
+			process_anthropic_line(mut state, trimmed, user_data, on_text, on_tool_call, on_thinking,
 				on_tool_stream)
 		} else {
-			process_openai_line(mut state, trimmed, on_text, on_tool_call, on_thinking,
+			process_openai_line(mut state, trimmed, user_data, on_text, on_tool_call, on_thinking,
 				on_tool_stream)
 		}
 	}

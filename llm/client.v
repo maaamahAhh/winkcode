@@ -46,11 +46,31 @@ pub:
 	tool_calls []ToolCall
 }
 
-pub type OnStreamText = fn (string)
+pub type OnStreamText = fn (voidptr, string)
 
-pub type OnToolStream = fn (string, string)
+pub type OnToolStream = fn (voidptr, string, string)
 
-pub type OnToolCall = fn (ToolCall)
+pub type OnToolCall = fn (voidptr, ToolCall)
+
+@[heap]
+struct StreamContext {
+mut:
+	state          &StreamState = unsafe { nil }
+	c              &Client      = unsafe { nil }
+	my_gen         int
+	user_data      voidptr      = unsafe { nil }
+	on_text        OnStreamText = unsafe { nil }
+	on_tool_call   OnToolCall   = unsafe { nil }
+	on_thinking    OnStreamText = unsafe { nil }
+	on_tool_stream OnToolStream = unsafe { nil }
+}
+
+fn client_http_stream_progress(mut request http.Request, chunk []u8, body_so_far u64, body_expected u64, status_code int) ! {
+	mut ctx := unsafe { &StreamContext(request.user_ptr) }
+	process_stream_chunk(mut request, mut ctx.state, chunk, body_so_far, body_expected,
+		status_code, ctx.my_gen, mut ctx.c, ctx.user_data, ctx.on_text, ctx.on_tool_call,
+		ctx.on_thinking, ctx.on_tool_stream)
+}
 
 @[heap]
 pub struct Client {
@@ -139,7 +159,7 @@ pub fn (mut c Client) merge_mcp_schemas(mcp_schemas string) {
 // chat_stream sends a streaming request to the LLM API.
 // If prompt is non-empty, it is added as a user message first.
 // When continuing after tool results, pass '' as prompt.
-pub fn (mut c Client) chat_stream(prompt string, on_text OnStreamText, on_tool_call OnToolCall, on_thinking OnStreamText, on_tool_stream OnToolStream) !StreamResult {
+pub fn (mut c Client) chat_stream(prompt string, user_data voidptr, on_text OnStreamText, on_tool_call OnToolCall, on_thinking OnStreamText, on_tool_stream OnToolStream) !StreamResult {
 	// Reset abort flag for this request and bump generation to ignore stale chunks
 	c.aborted = false
 	c.request_generation++
@@ -166,17 +186,23 @@ pub fn (mut c Client) chat_stream(prompt string, on_text OnStreamText, on_tool_c
 		headers.add_custom('anthropic-version', '2023-06-01') or {}
 	}
 	headers.add_custom('content-type', 'application/json') or {}
-	headers.add_custom('User-Agent', 'winkcode/0.0.2') or {}
+	headers.add_custom('User-Agent', 'winkcode/0.0.2.5') or {}
 
-	mut state := StreamState{
+	mut state := &StreamState{
 		api_format: c.api_format
 		generation: my_gen
 	}
-	// V closures capture `mut` structs by value, so the streamed flag set
-	// inside the callback would never reach `state` below, causing the
-	// fallback parser to run again (duplicated output). Capture a pointer
-	// instead to share the state with the callback.
-	mut state_ref := &state
+
+	mut stream_ctx := &StreamContext{
+		state:          state
+		c:              &c
+		my_gen:         my_gen
+		user_data:      user_data
+		on_text:        on_text
+		on_tool_call:   on_tool_call
+		on_thinking:    on_thinking
+		on_tool_stream: on_tool_stream
+	}
 
 	mut http_req := http.Request{
 		method:           .post
@@ -184,10 +210,8 @@ pub fn (mut c Client) chat_stream(prompt string, on_text OnStreamText, on_tool_c
 		header:           headers
 		data:             body_json
 		read_timeout:     120 * time.second
-		on_progress_body: fn [mut state_ref, on_text, on_tool_call, on_thinking, on_tool_stream, mut c, my_gen] (mut request http.Request, chunk []u8, body_so_far u64, body_expected u64, status_code int) ! {
-			process_stream_chunk(mut request, mut state_ref, chunk, body_so_far, body_expected,
-				status_code, my_gen, mut c, on_text, on_tool_call, on_thinking, on_tool_stream)
-		}
+		user_ptr:         voidptr(stream_ctx)
+		on_progress_body: client_http_stream_progress
 	}
 
 	response := http_req.do() or { return error('API request failed: ${err}') }
@@ -205,7 +229,7 @@ pub fn (mut c Client) chat_stream(prompt string, on_text OnStreamText, on_tool_c
 		if idx := sse_body.index('data:') {
 			sse_body = sse_body[idx..]
 		}
-		parse_sse_full(mut state, sse_body, on_text, on_tool_call, on_thinking, on_tool_stream,
+		parse_sse_full(mut state, sse_body, user_data, on_text, on_tool_call, on_thinking, on_tool_stream,
 			my_gen)
 	}
 
@@ -218,13 +242,13 @@ pub fn (mut c Client) chat_stream(prompt string, on_text OnStreamText, on_tool_c
 		}
 		state.tool_calls << tc
 		if on_tool_call != unsafe { nil } {
-			on_tool_call(tc)
+			on_tool_call(user_data, tc)
 		}
 		state.pending_tool_id = ''
 		state.pending_tool_name = ''
 		state.pending_tool_input = ''
 	}
-	finalize_openai_tool_calls(mut state, on_tool_call)
+	finalize_openai_tool_calls(mut state, user_data, on_tool_call)
 
 	// Add assistant message to history
 	c.add_assistant_message(state.full_text, state.thinking, state.reasoning_field,

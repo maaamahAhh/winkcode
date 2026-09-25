@@ -106,6 +106,9 @@ pub mut:
 	all_chat_lines        []RenderLine
 	visible_chat_lines    []RenderLine
 	last_paste_time       i64
+	// Ctrl+C double-tap exit state
+	ctrl_c_armed     bool
+	last_ctrl_c_time i64
 }
 
 // === Message management ===
@@ -494,6 +497,7 @@ pub fn start(mut ag agent.Agent, version string) {
 				}
 			}
 			app.ag.client.messages = reconstruct_client_messages(s.messages, compact_idx)
+			app.ag.update_cached_tokens()
 			if app.messages.len > 0 {
 				app.header_mode = .compact
 			}

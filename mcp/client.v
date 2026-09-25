@@ -258,10 +258,6 @@ fn stop_mcp_server(mut server McpServer) {
 
 // --- JSON-RPC Communication ---
 
-fn send_request(mut server McpServer, method string, params string) !string {
-	return send_request_with_timeout(mut server, method, params, default_mcp_request_timeout_ms)
-}
-
 fn send_request_with_timeout(mut server McpServer, method string, params string, timeout_ms int) !string {
 	server.request_id++
 	id := server.request_id
@@ -345,7 +341,7 @@ fn read_response(mut server McpServer, expected_id int, timeout_ms int) !string 
 // --- MCP Protocol ---
 
 fn mcp_initialize(mut server McpServer) bool {
-	params := '{"protocolVersion":"2024-11-05","capabilities":{"roots":{"listChanged":true}},"clientInfo":{"name":"wink-code","version":"0.0.2"}}'
+	params := '{"protocolVersion":"2024-11-05","capabilities":{"roots":{"listChanged":true}},"clientInfo":{"name":"wink-code","version":"0.0.2.5"}}'
 	response := send_request_with_timeout(mut server, 'initialize', params, 60000) or {
 		return false
 	}

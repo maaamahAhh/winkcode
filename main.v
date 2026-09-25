@@ -7,8 +7,9 @@ import config
 import tui
 import agent
 import session
+import tools
 
-const version = '0.0.2'
+const version = '0.0.2.5'
 
 struct CliArgs {
 mut:
@@ -58,6 +59,7 @@ fn parse_cli_args(args []string) CliArgs {
 }
 
 fn main() {
+	tools.init_file_lock()
 	args := os.args
 	cli := parse_cli_args(args)
 

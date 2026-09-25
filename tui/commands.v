@@ -127,6 +127,7 @@ fn (mut app App) cmd_compact(parts []string) {
 		app.status = ''
 		app.session_dirty = true
 		app.mu.unlock()
+		app.ag.update_cached_tokens()
 		app.push_message('compaction', summary)
 	}()
 }
@@ -160,6 +161,7 @@ fn (mut app App) cmd_retry() {
 
 	// 2. Roll back client history so it cleanly ends at the last user message
 	app.ag.client.messages = app.ag.client.messages[..last_client_user_idx + 1].clone()
+	app.ag.update_cached_tokens()
 
 	// 3. Roll back UI messages so it cleanly ends at the last user message
 	mut last_ui_user_idx := -1

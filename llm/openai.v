@@ -30,7 +30,7 @@ struct OpenAIToolCallFunction {
 	arguments string
 }
 
-fn handle_openai_delta(mut state StreamState, json_str string, on_text OnStreamText, _on_tool_call OnToolCall, on_thinking OnStreamText, on_tool_stream OnToolStream) {
+fn handle_openai_delta(mut state StreamState, json_str string, user_data voidptr, on_text OnStreamText, _on_tool_call OnToolCall, on_thinking OnStreamText, on_tool_stream OnToolStream) {
 	chunk := json2.decode[OpenAIChunk](json_str) or { return }
 	if chunk.choices.len == 0 {
 		return
@@ -51,18 +51,21 @@ fn handle_openai_delta(mut state StreamState, json_str string, on_text OnStreamT
 		}
 		state.thinking += thinking
 		if on_thinking != unsafe { nil } {
-			on_thinking(thinking)
+			on_thinking(user_data, thinking)
 		}
 	}
 
 	if delta.content.len > 0 {
 		state.full_text += delta.content
 		if on_text != unsafe { nil } {
-			on_text(delta.content)
+			on_text(user_data, delta.content)
 		}
 	}
 
 	for tc in delta.tool_calls {
+		if tc.index < 0 {
+			continue
+		}
 		idx := tc.index
 		for state.pending_tools.len <= idx {
 			state.pending_tools << PendingToolCall{}
@@ -77,12 +80,12 @@ fn handle_openai_delta(mut state StreamState, json_str string, on_text OnStreamT
 			state.pending_tools[idx].arguments += tc.function.arguments
 		}
 		if on_tool_stream != unsafe { nil } {
-			on_tool_stream(state.pending_tools[idx].name, state.pending_tools[idx].arguments)
+			on_tool_stream(user_data, state.pending_tools[idx].name, state.pending_tools[idx].arguments)
 		}
 	}
 }
 
-fn finalize_openai_tool_calls(mut state StreamState, on_tool_call OnToolCall) {
+fn finalize_openai_tool_calls(mut state StreamState, user_data voidptr, on_tool_call OnToolCall) {
 	for pt in state.pending_tools {
 		if pt.name.len == 0 {
 			continue
@@ -103,13 +106,13 @@ fn finalize_openai_tool_calls(mut state StreamState, on_tool_call OnToolCall) {
 		}
 		state.tool_calls << tc
 		if on_tool_call != unsafe { nil } {
-			on_tool_call(tc)
+			on_tool_call(user_data, tc)
 		}
 	}
 	state.pending_tools = []PendingToolCall{}
 }
 
-fn process_openai_line(mut state StreamState, line string, on_text OnStreamText, on_tool_call OnToolCall, on_thinking OnStreamText, on_tool_stream OnToolStream) {
+fn process_openai_line(mut state StreamState, line string, user_data voidptr, on_text OnStreamText, on_tool_call OnToolCall, on_thinking OnStreamText, on_tool_stream OnToolStream) {
 	if line.len == 0 {
 		return
 	}
@@ -121,7 +124,7 @@ fn process_openai_line(mut state StreamState, line string, on_text OnStreamText,
 		state.openai_done = true
 		return
 	}
-	handle_openai_delta(mut state, json_str, on_text, on_tool_call, on_thinking, on_tool_stream)
+	handle_openai_delta(mut state, json_str, user_data, on_text, on_tool_call, on_thinking, on_tool_stream)
 }
 
 fn (c &Client) build_request_body_openai() string {
