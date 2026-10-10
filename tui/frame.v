@@ -1,5 +1,9 @@
 module tui
 
+import strings
+import time
+import tools
+
 // on_frame coordinates the TUI rendering loop.
 pub fn on_frame(x voidptr) {
 	mut app := unsafe { &App(x) }
@@ -13,6 +17,37 @@ pub fn on_frame(x voidptr) {
 
 	// Update spinner frame
 	app.spinner_frame = (app.spinner_frame + 1) % spinner_frames.len
+
+	// If idle and a background task finishes, wake up the agent with the task result
+	if !app.is_loading && app.mode == .normal {
+		mut tm := tools.get_task_manager()
+		completed := tm.drain_completed_tasks()
+		if completed.len > 0 {
+			mut notice_sb := strings.new_builder(512)
+			for task in completed {
+				status_str := if task.exit_code == 0 {
+					'succeeded'
+				} else {
+					'failed (exit code: ${task.exit_code})'
+				}
+				out_snippet := if task.output.len > 2000 {
+					task.output[..2000] + '...'
+				} else {
+					task.output
+				}
+				notice_sb.writeln('[Background task ${task.id} (${task.command}) ${status_str}.\nOutput:\n${out_snippet}]')
+			}
+			prompt := notice_sb.str().trim_space()
+			app.push_message('user', prompt)
+			app.streaming_text = ''
+			app.streaming_thinking = ''
+			app.status = 'Waiting for model...'
+			app.is_loading = true
+			app.loading_start = time.ticks()
+			app.scroll_offset = 0
+			go app.run_query(prompt)
+		}
+	}
 
 	// Calculate layout
 	footer_height := 1
@@ -57,9 +92,24 @@ pub fn on_frame(x voidptr) {
 		chat_height = 1
 	}
 
-	all_lines := build_chat_lines(app.messages, app.streaming_text, app.streaming_thinking,
-		app.streaming_tool_name, app.streaming_tool_args, app.expand_tool_results, app.is_loading,
-		app.status, chat_width, 10000, app.spinner_frame)
+	// Cache rendered history lines to avoid re-parsing markdown on every frame
+	history_cache_valid := app.cached_history_lines.len > 0
+		&& app.cached_history_msg_len == app.messages.len
+		&& app.cached_history_width == chat_width
+		&& app.cached_history_expand == app.expand_tool_results
+
+	if !history_cache_valid {
+		app.cached_history_lines = build_history_lines(app.messages, app.expand_tool_results,
+			chat_width, 10000)
+		app.cached_history_msg_len = app.messages.len
+		app.cached_history_width = chat_width
+		app.cached_history_expand = app.expand_tool_results
+	}
+
+	mut all_lines := app.cached_history_lines.clone()
+	append_streaming_lines(mut all_lines, app.streaming_text, app.streaming_thinking,
+		app.streaming_tool_name, app.streaming_tool_args, app.expand_tool_results,
+		app.is_loading, chat_width, 10000)
 	max_offset := if all_lines.len > chat_height { all_lines.len - chat_height } else { 0 }
 	app.max_scroll_offset = max_offset
 	if app.scroll_offset > max_offset {

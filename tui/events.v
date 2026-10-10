@@ -391,6 +391,10 @@ fn on_event(e &termui.Event, x voidptr) {
 		}
 		.mouse_scroll {
 			app.mu.lock()
+			// V's term.ui Windows backend maps negative WHEEL_DELTA (scrolling wheel downward/toward user)
+			// to Direction.up, and positive WHEEL_DELTA (scrolling wheel upward/away) to Direction.down.
+			// Therefore Direction.up decreases scroll_offset (moving toward the latest messages/bottom)
+			// and Direction.down increases scroll_offset (moving upward into message history).
 			match e.direction {
 				.up {
 					app.scroll_offset -= 3

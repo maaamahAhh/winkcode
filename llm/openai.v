@@ -2,8 +2,14 @@ module llm
 
 import json2
 
+struct OpenAIError {
+	message string
+	code    int
+}
+
 struct OpenAIChunk {
 	choices []OpenAIChoice
+	error   OpenAIError @[json: 'error']
 }
 
 struct OpenAIChoice {
@@ -32,6 +38,17 @@ struct OpenAIToolCallFunction {
 
 fn handle_openai_delta(mut state StreamState, json_str string, user_data voidptr, on_text OnStreamText, _on_tool_call OnToolCall, on_thinking OnStreamText, on_tool_stream OnToolStream) {
 	chunk := json2.decode[OpenAIChunk](json_str) or { return }
+	if chunk.error.message.len > 0 {
+		err_str := if chunk.error.code > 0 {
+			'API Error ${chunk.error.code}: ${chunk.error.message}'
+		} else {
+			'API Error: ${chunk.error.message}'
+		}
+		if on_text != unsafe { nil } {
+			on_text(user_data, '\n[${err_str}]\n')
+		}
+		return
+	}
 	if chunk.choices.len == 0 {
 		return
 	}
@@ -151,16 +168,24 @@ fn build_openai_messages_json(messages []Message, system_prompt string, reasonin
 
 	for msg in messages {
 		if msg.role == 'user' && msg.content.len > 0 {
-			tool_result_msgs := build_openai_tool_result_messages(msg)
-			for tool_msg in tool_result_msgs {
-				parts << tool_msg
-			}
+			mut has_tool_results := false
 			for block in msg.content {
 				if block.typ == 'tool_result' {
-					pending_tool_ids = pending_tool_ids.filter(it != block.id)
+					has_tool_results = true
+					if block.id in pending_tool_ids {
+						if img := block.image_data {
+							data_url := 'data:${img.mime_type};base64,${img.data}'
+							parts << '{"role":"tool","tool_call_id":${json2.encode(block.id)},"content":[{"type":"text","text":${json2.encode(block.content)}},{"type":"image_url","image_url":{"url":${json2.encode(data_url)}}}]}'
+						} else {
+							parts << '{"role":"tool","tool_call_id":${json2.encode(block.id)},"content":${json2.encode(block.content)}}'
+						}
+						pending_tool_ids = pending_tool_ids.filter(it != block.id)
+					}
 				}
 			}
-			continue
+			if has_tool_results {
+				continue
+			}
 		}
 
 		if pending_tool_ids.len > 0 {
@@ -178,7 +203,10 @@ fn build_openai_messages_json(messages []Message, system_prompt string, reasonin
 			}
 		}
 
-		parts << build_openai_message_json(msg, reasoning_mode)
+		msg_json := build_openai_message_json(msg, reasoning_mode)
+		if msg_json.len > 0 {
+			parts << msg_json
+		}
 	}
 
 	if pending_tool_ids.len > 0 {
@@ -227,23 +255,18 @@ fn build_openai_message_json(msg Message, reasoning_mode bool) string {
 			msg_parts << '"tool_calls":[${tool_calls_json.join(',')}]'
 		}
 		return '{${msg_parts.join(',')}}'
+	} else if msg.role == 'assistant' && msg.thinking.len > 0 {
+		mut msg_parts := []string{}
+		msg_parts << '"role":${json2.encode('assistant')}'
+		msg_parts << '"content":null'
+		field := if msg.thinking_field.len > 0 {
+			msg.thinking_field
+		} else {
+			'reasoning_content'
+		}
+		msg_parts << '"${field}":${json2.encode(msg.thinking)}'
+		return '{${msg_parts.join(',')}}'
 	} else {
 		return '{"role":${json2.encode(msg.role)},"content":""}'
 	}
-}
-
-fn build_openai_tool_result_messages(msg Message) []string {
-	mut result := []string{}
-	for block in msg.content {
-		if block.typ != 'tool_result' {
-			continue
-		}
-		if img := block.image_data {
-			data_url := 'data:${img.mime_type};base64,${img.data}'
-			result << '{"role":"tool","tool_call_id":${json2.encode(block.id)},"content":[{"type":"text","text":${json2.encode(block.content)}},{"type":"image_url","image_url":{"url":${json2.encode(data_url)}}}]}'
-		} else {
-			result << '{"role":"tool","tool_call_id":${json2.encode(block.id)},"content":${json2.encode(block.content)}}'
-		}
-	}
-	return result
 }

@@ -10,6 +10,7 @@ import mcp
 import utils
 import time
 import sync
+import strings
 
 pub struct AgentCallbacks {
 pub:
@@ -478,6 +479,30 @@ pub fn (mut a Agent) run(prompt string, cb AgentCallbacks) {
 		}
 
 		if result.tool_calls.len == 0 {
+			// Check if any background tasks completed while the model was thinking/streaming
+			mut tm := tools.get_task_manager()
+			completed := tm.drain_completed_tasks()
+			if completed.len > 0 {
+				mut notice_sb := strings.new_builder(512)
+				for task in completed {
+					status_str := if task.exit_code == 0 {
+						'succeeded'
+					} else {
+						'failed (exit code: ${task.exit_code})'
+					}
+					out_snippet := if task.output.len > 2000 {
+						task.output[..2000] + '...'
+					} else {
+						task.output
+					}
+					notice_sb.writeln('[Background task ${task.id} (${task.command}) ${status_str}.\nOutput:\n${out_snippet}]')
+				}
+				a.client.add_user_message(notice_sb.str().trim_space())
+				a.update_cached_tokens()
+				current_prompt = ''
+				continue
+			}
+
 			if cb.on_complete != unsafe { nil } {
 				cb.on_complete(cb.user_data)
 			}
@@ -528,6 +553,28 @@ pub fn (mut a Agent) run(prompt string, cb AgentCallbacks) {
 		}
 
 		a.client.add_tool_results(tool_results)
+
+		// Check if any background tasks completed concurrently with tool execution
+		mut tm := tools.get_task_manager()
+		completed := tm.drain_completed_tasks()
+		if completed.len > 0 {
+			mut notice_sb := strings.new_builder(512)
+			for task in completed {
+				status_str := if task.exit_code == 0 {
+					'succeeded'
+				} else {
+					'failed (exit code: ${task.exit_code})'
+				}
+				out_snippet := if task.output.len > 2000 {
+					task.output[..2000] + '...'
+				} else {
+					task.output
+				}
+				notice_sb.writeln('[Background task ${task.id} (${task.command}) ${status_str}.\nOutput:\n${out_snippet}]')
+			}
+			a.client.add_user_message(notice_sb.str().trim_space())
+		}
+
 		a.update_cached_tokens()
 		current_prompt = ''
 	}

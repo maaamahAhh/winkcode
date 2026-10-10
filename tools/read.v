@@ -4,6 +4,9 @@ import os
 import strings
 import encoding.base64
 
+const default_read_max_lines = 2000
+const default_read_max_bytes = 50 * 1024
+
 fn encode_base64(data []u8) string {
 	return base64.encode(data)
 }
@@ -118,7 +121,8 @@ fn tool_read(args map[string]string) ToolResult {
 
 	lines := content.split('\n')
 	mut offset := if 'offset' in args { args['offset'].int() } else { 1 }
-	mut limit := if 'limit' in args { args['limit'].int() } else { lines.len }
+	user_specified_limit := 'limit' in args
+	mut limit := if user_specified_limit { args['limit'].int() } else { default_read_max_lines }
 
 	if offset < 1 {
 		offset = 1
@@ -129,7 +133,7 @@ fn tool_read(args map[string]string) ToolResult {
 	start := offset - 1
 	if start >= lines.len {
 		return ToolResult{
-			content:  'Error: offset beyond file length'
+			content:  'Error: offset ${offset} beyond file length (${lines.len} lines total)'
 			is_error: true
 		}
 	}
@@ -145,12 +149,35 @@ fn tool_read(args map[string]string) ToolResult {
 	num_width := end.str().len
 
 	mut sb := strings.new_builder((end - start) * 64)
+	mut truncated_by_bytes := false
+	mut actual_end := start
+
 	for i in start .. end {
 		line_num := pad_left((i + 1).str(), num_width)
-		sb.writeln('${line_num}→${lines[i]}')
+		line_formatted := '${line_num}→${lines[i]}\n'
+		if !user_specified_limit && sb.len + line_formatted.len > default_read_max_bytes {
+			truncated_by_bytes = true
+			break
+		}
+		sb.write_string(line_formatted)
+		actual_end = i + 1
 	}
+
+	mut output := sb.str()
+	if actual_end < lines.len {
+		next_offset := actual_end + 1
+		if truncated_by_bytes {
+			output += '\n[Showing lines ${start + 1}-${actual_end} of ${lines.len} (50KB limit). Use offset=${next_offset} to continue.]'
+		} else if !user_specified_limit {
+			output += '\n[Showing lines ${start + 1}-${actual_end} of ${lines.len}. Use offset=${next_offset} to continue.]'
+		} else {
+			remaining := lines.len - actual_end
+			output += '\n[${remaining} more lines in file. Use offset=${next_offset} to continue.]'
+		}
+	}
+
 	return ToolResult{
-		content:  truncate_output(sb.str(), 100_000)
+		content:  output
 		is_error: false
 	}
 }

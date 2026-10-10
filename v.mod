@@ -1,7 +1,7 @@
 Module {
 	name: 'winkcode'
-	description: 'AI Agent CLI'
-	version: '0.0.2.5'
-	license: 'MIT'
+	description: 'LLM Agent CLI'
+	version: '0.0.3'
+	license: 'Unlicense'
 	dependencies: []
 }

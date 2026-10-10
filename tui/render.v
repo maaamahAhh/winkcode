@@ -425,16 +425,16 @@ pub fn render_inline(text string) []RenderLine {
 	return merged
 }
 
-pub fn render_thinking(text string, width int) []RenderLine {
+pub fn render_thinking(text string, width int, max_lines int) []RenderLine {
 	mut lines := []RenderLine{}
-	if text.len == 0 || width <= 0 {
+	if text.len == 0 || width <= 0 || max_lines <= 0 {
 		return lines
 	}
 	lines << RenderLine{
 		text:  '  ◇ thinking'
 		color: 'dim'
 	}
-	for wrapped in wrap_text(text.trim_space(), width - 4, 8) {
+	for wrapped in wrap_text(text.trim_space(), width - 4, max_lines) {
 		lines << RenderLine{
 			text:  '    ${wrapped}'
 			color: 'dim'

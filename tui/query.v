@@ -2,6 +2,7 @@ module tui
 
 import time
 import agent
+import tools
 
 fn (mut app App) commit_streaming_assistant_message() {
 	text := app.streaming_text
@@ -71,9 +72,10 @@ fn (mut app App) update_tool_call_status(call_id string, duration_str string, st
 	}
 }
 
-// abort_query safely cancels the running model/tool query, finalizes pending tool calls,
-// and resets streaming states.
+// abort_query safely cancels the running model/tool query, terminates any active foreground process,
+// finalizes pending tool calls, and resets streaming states.
 pub fn (mut app App) abort_query() {
+	tools.abort_foreground_process()
 	app.ag.client.aborted = true
 	app.is_loading = false
 	app.status = ''
@@ -204,6 +206,22 @@ fn app_cb_tool_call(user_data voidptr, call_id string, name string, input string
 fn app_cb_tool_result(user_data voidptr, call_id string, _name string, preview string, is_error bool, parent_id string) {
 	mut app := unsafe { &App(user_data) }
 	app.mu.lock()
+	defer {
+		app.mu.unlock()
+	}
+
+	// If query was aborted, drop late foreground tool results so they do not corrupt the conversation
+	if app.ag.client.aborted {
+		return
+	}
+	// Check if this tool call was already marked as interrupted
+	for msg in app.messages {
+		if msg.role == 'tool_call' && msg.tool_id == call_id && msg.tool_status == 'error'
+			&& msg.text.contains('(interrupted)') {
+			return
+		}
+	}
+
 	status := if is_error { 'error' } else { 'success' }
 	duration_str := app.take_tool_duration(call_id)
 	app.update_tool_call_status(call_id, duration_str, status)
@@ -224,7 +242,6 @@ fn app_cb_tool_result(user_data voidptr, call_id string, _name string, preview s
 		app.status = 'Waiting for model...'
 	}
 	app.session_dirty = true
-	app.mu.unlock()
 }
 
 fn app_cb_retry(user_data voidptr, attempt int, max_attempts int, delay_s int, _err_msg string) {

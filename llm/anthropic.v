@@ -2,6 +2,16 @@ module llm
 
 import json2
 
+struct AnthropicErrorEvent {
+	typ   string                @[json: 'type']
+	error AnthropicErrorDetail @[json: 'error']
+}
+
+struct AnthropicErrorDetail {
+	typ     string @[json: 'type']
+	message string
+}
+
 struct AnthropicEvent {
 	typ           string                 @[json: 'type']
 	content_block ?AnthropicContentBlock @[json: 'content_block']
@@ -136,6 +146,15 @@ fn process_anthropic_line(mut state StreamState, line string, user_data voidptr,
 		}
 		'content_block_stop' {
 			handle_block_stop(mut state, user_data, on_tool_call)
+		}
+		'error' {
+			if err_ev := json2.decode[AnthropicErrorEvent](json_str) {
+				msg := if err_ev.error.message.len > 0 { err_ev.error.message } else { 'Unknown error' }
+				typ := if err_ev.error.typ.len > 0 { err_ev.error.typ } else { 'error' }
+				if on_text != unsafe { nil } {
+					on_text(user_data, '\n[Anthropic API ${typ}: ${msg}]\n')
+				}
+			}
 		}
 		else {}
 	}

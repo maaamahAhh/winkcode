@@ -2,6 +2,7 @@ module tui
 
 import os
 import time
+import tools
 
 // Spinner frames (Braille dots animation)
 const spinner_frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
@@ -170,6 +171,19 @@ fn draw_footer(mut app App, width int, y int) {
 	git_branch := get_git_branch(mut app)
 	if git_branch.len > 0 {
 		footer_parts << 'git:${git_branch}'
+	}
+
+	mut tm := tools.get_task_manager()
+	active_tasks := tm.get_active_tasks()
+	if active_tasks.len == 1 {
+		t := active_tasks[0]
+		mut cmd_short := t.command.trim_space().replace('\r', ' ').replace('\n', ' ')
+		if cmd_short.len > 24 {
+			cmd_short = cmd_short[..21] + '...'
+		}
+		footer_parts << '⚙ ${t.id}: ${cmd_short}'
+	} else if active_tasks.len > 1 {
+		footer_parts << '⚙ ${active_tasks.len} tasks'
 	}
 
 	effort := app.ag.get_effort()

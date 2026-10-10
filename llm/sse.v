@@ -26,7 +26,6 @@ mut:
 	current_block_type string            // "text", "tool_use", or "thinking" (Anthropic)
 	api_format         string            // "anthropic" or "openai"
 	openai_done        bool              // OpenAI [DONE] signal
-	raw_body           string            // accumulated raw SSE data (for fallback)
 	streamed           bool              // whether on_progress_body was ever called
 	generation         int               // request generation, to ignore stale chunks
 }
@@ -47,10 +46,8 @@ fn process_stream_chunk(mut request http.Request, mut state StreamState, chunk [
 	if u64(chunk_str.len) >= body_so_far && state.processed_bytes < chunk_str.len {
 		state.buffer += chunk_str[state.processed_bytes..]
 		state.processed_bytes = chunk_str.len
-		state.raw_body = chunk_str
 	} else {
 		state.buffer += chunk_str
-		state.raw_body += chunk_str
 	}
 	process_buffered_lines(mut state, user_data, on_text, on_tool_call, on_thinking, on_tool_stream)
 }

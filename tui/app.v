@@ -109,6 +109,11 @@ pub mut:
 	// Ctrl+C double-tap exit state
 	ctrl_c_armed     bool
 	last_ctrl_c_time i64
+	// History render cache
+	cached_history_lines   []RenderLine
+	cached_history_msg_len int
+	cached_history_width   int
+	cached_history_expand  bool
 }
 
 // === Message management ===

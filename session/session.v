@@ -218,7 +218,8 @@ pub fn (s Session) save() ! {
 	} else {
 		session_file_path(s.header)
 	}
-	mut file := os.create(path) or { return error('failed to create session file: ${err}') }
+	tmp_path := '${path}.tmp_${time.ticks()}'
+	mut file := os.create(tmp_path) or { return error('failed to create session temp file: ${err}') }
 
 	mut header_map := map[string]string{}
 	header_map['type'] = 'session'
@@ -255,6 +256,12 @@ pub fn (s Session) save() ! {
 	}
 
 	file.close()
+
+	// Atomic commit: replace destination with completed temp file
+	os.mv_by_cp(tmp_path, path) or {
+		os.rm(tmp_path) or {}
+		return error('failed to commit session file: ${err}')
+	}
 }
 
 pub fn (mut s Session) append_message(role string, text string) ! {

@@ -175,7 +175,7 @@ fn render_tool_result_lines(text string, role string, expand_tool_results bool, 
 	return lines
 }
 
-pub fn build_chat_lines(messages []ChatMessage, streaming_text string, streaming_thinking string, streaming_tool_name string, streaming_tool_args string, expand_tool_results bool, is_loading bool, status string, width int, max_lines int, spinner_frame int) []RenderLine {
+pub fn build_history_lines(messages []ChatMessage, expand_tool_results bool, width int, max_lines int) []RenderLine {
 	mut lines := []RenderLine{}
 	mut rendered_result_indices := map[int]bool{}
 
@@ -412,7 +412,7 @@ pub fn build_chat_lines(messages []ChatMessage, streaming_text string, streaming
 
 		// Render thinking block for assistant messages (before text)
 		if item.role == 'assistant' && item.thinking.len > 0 {
-			for tl in render_thinking(item.thinking, width - 2) {
+			for tl in render_thinking(item.thinking, width - 2, max_lines) {
 				lines << tl
 			}
 		}
@@ -437,13 +437,17 @@ pub fn build_chat_lines(messages []ChatMessage, streaming_text string, streaming
 		}
 		msg_idx++
 	}
+	return lines
+}
+
+pub fn append_streaming_lines(mut lines []RenderLine, streaming_text string, streaming_thinking string, streaming_tool_name string, streaming_tool_args string, expand_tool_results bool, is_loading bool, width int, max_lines int) {
 	if streaming_thinking.len > 0 || streaming_text.len > 0 || streaming_tool_name.len > 0 {
 		lines << RenderLine{
 			text:  '✦ ${now_formatted()}'
 			color: 'cyan'
 		}
 		if streaming_thinking.len > 0 {
-			for tl in render_thinking(streaming_thinking, width - 2) {
+			for tl in render_thinking(streaming_thinking, width - 2, max_lines) {
 				lines << tl
 			}
 		}
@@ -520,6 +524,12 @@ pub fn build_chat_lines(messages []ChatMessage, streaming_text string, streaming
 	} else if is_loading {
 		// Loading indicator is drawn separately, not here
 	}
+}
+
+pub fn build_chat_lines(messages []ChatMessage, streaming_text string, streaming_thinking string, streaming_tool_name string, streaming_tool_args string, expand_tool_results bool, is_loading bool, status string, width int, max_lines int, spinner_frame int) []RenderLine {
+	mut lines := build_history_lines(messages, expand_tool_results, width, max_lines)
+	append_streaming_lines(mut lines, streaming_text, streaming_thinking, streaming_tool_name,
+		streaming_tool_args, expand_tool_results, is_loading, width, max_lines)
 	if lines.len <= max_lines {
 		return lines
 	}

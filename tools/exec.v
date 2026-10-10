@@ -2,7 +2,50 @@ module tools
 
 import os
 import strings
+import sync
 import time
+
+struct ForegroundTracker {
+mut:
+	mu   sync.Mutex
+	proc ?&os.Process
+}
+
+fn get_foreground_tracker() &ForegroundTracker {
+	unsafe {
+		mut static ft := &ForegroundTracker(nil)
+		if ft == nil {
+			ft = &ForegroundTracker{}
+		}
+		return ft
+	}
+}
+
+pub fn register_foreground_process(mut p os.Process) {
+	mut ft := get_foreground_tracker()
+	ft.mu.lock()
+	ft.proc = &p
+	ft.mu.unlock()
+}
+
+pub fn unregister_foreground_process() {
+	mut ft := get_foreground_tracker()
+	ft.mu.lock()
+	ft.proc = none
+	ft.mu.unlock()
+}
+
+pub fn abort_foreground_process() {
+	mut ft := get_foreground_tracker()
+	ft.mu.lock()
+	defer { ft.mu.unlock() }
+	if mut p := ft.proc {
+		if p.is_alive() {
+			kill_process_tree(mut p)
+		}
+		ft.proc = none
+	}
+}
 
 // Execution engine for external shell processes and commands.
 // Background task promotion adapted from Google Antigravity architecture.
@@ -10,6 +53,11 @@ import time
 fn run_exec_process(mut p os.Process, timeout_sec int, wait_ms int, cmd_display string) ToolResult {
 	p.set_redirect_stdio_merged()
 	p.run()
+
+	register_foreground_process(mut p)
+	defer {
+		unregister_foreground_process()
+	}
 
 	start := time.ticks()
 	mut output_sb := strings.new_builder(4096)
@@ -27,6 +75,7 @@ fn run_exec_process(mut p os.Process, timeout_sec int, wait_ms int, cmd_display 
 			time.sleep(20 * time.millisecond)
 		}
 		if p.is_alive() {
+			unregister_foreground_process()
 			initial_out := output_sb.str().trim_space()
 			mut tm := get_task_manager()
 			tid := tm.register(cmd_display, mut p, initial_out)

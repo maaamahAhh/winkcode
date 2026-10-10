@@ -20,11 +20,52 @@ pub mut:
 	exit_code  int
 }
 
+pub struct ActiveTaskInfo {
+pub:
+	id      string
+	command string
+}
+
+pub struct TaskCompletion {
+pub:
+	id        string
+	command   string
+	exit_code int
+	output    string
+}
+
 pub struct TaskManager {
 pub mut:
-	tasks map[string]&BackgroundTask
-	seq   int
-	mu    sync.Mutex
+	tasks           map[string]&BackgroundTask
+	seq             int
+	mu              sync.Mutex
+	completed_queue []TaskCompletion
+}
+
+pub fn (mut tm TaskManager) drain_completed_tasks() []TaskCompletion {
+	tm.mu.lock()
+	defer { tm.mu.unlock() }
+	if tm.completed_queue.len == 0 {
+		return []TaskCompletion{}
+	}
+	res := tm.completed_queue.clone()
+	tm.completed_queue = []TaskCompletion{}
+	return res
+}
+
+pub fn (mut tm TaskManager) get_active_tasks() []ActiveTaskInfo {
+	tm.mu.lock()
+	defer { tm.mu.unlock() }
+	mut active := []ActiveTaskInfo{}
+	for tid, task in tm.tasks {
+		if task.process.is_alive() {
+			active << ActiveTaskInfo{
+				id:      tid
+				command: task.command
+			}
+		}
+	}
+	return active
 }
 
 pub fn get_task_manager() &TaskManager {
@@ -87,7 +128,18 @@ pub fn (mut tm TaskManager) register(command string, mut p os.Process, initial_o
 		task.mu.lock()
 		task.is_done = true
 		task.exit_code = task.process.code
+		out := task.output_buf.str().trim_space()
 		task.mu.unlock()
+
+		mut mgr := get_task_manager()
+		mgr.mu.lock()
+		mgr.completed_queue << TaskCompletion{
+			id:        task.id
+			command:   task.command
+			exit_code: task.exit_code
+			output:    out
+		}
+		mgr.mu.unlock()
 	}()
 
 	return tid
